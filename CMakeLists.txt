@@ -1,3 +1,12 @@
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+cmake_minimum_required(VERSION 3.14)
+project(delta_compress)
+
+add_compile_options(-msse3)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
+
 include(FetchContent)
 
 # Build xxHash inside our tree, don’t install it
