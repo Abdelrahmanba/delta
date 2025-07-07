@@ -6,7 +6,6 @@
 #include <iostream>
 #include <map>
 
-
 Chunker::Chunker() {
     minChunkSize = 256;
     maxChunkSize = 2048;
@@ -111,27 +110,54 @@ uint64_t Chunker::range_scan_geq_sse128(char *buff, uint64_t start_position,
 }
 #endif
 
+// size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd)
+// {
+//     uint32_t i = 0;
+//     size_t size = buffEnd - buffBegin;
+//     char max_value = readBuffer[i + buffBegin];
+//     i++;
+//     if (size > maxChunkSize)
+//         size = maxChunkSize;
+//     else if (size < window_size)
+//         return size;
+// #ifdef __SSE3__
+//     // If SIMD enabled, accelerate find_maximum() and slide depending on
+//     chosen
+//     // SIMD mode
+//     max_value = find_maximum_sse128(readBuffer + buffBegin, 0, window_size,
+//     sse_array);
+//     return range_scan_geq_sse128(readBuffer + buffBegin, window_size, size,
+//                                  max_value);
+// #endif
+
+//     return 0;
+// }
+
 size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd) {
-    uint32_t i = 0;
+    uint64_t i = 0;
     size_t size = buffEnd - buffBegin;
-    uint8_t max_value = (uint8_t)readBuffer[i];
+    uint64_t max_value = readBuffer[i + buffBegin];
     i++;
     if (size > maxChunkSize)
         size = maxChunkSize;
     else if (size < window_size)
         return size;
-#ifdef __SSE3__
-    // If SIMD enabled, accelerate find_maximum() and slide depending on chosen
-    // SIMD mode
-    max_value = find_maximum_sse128(readBuffer + buffBegin, 0, window_size,
-    sse_array);
-    return range_scan_geq_sse128(readBuffer + buffBegin, window_size, size,
-                                 max_value);
-#endif
 
-    return 0;
+    for (; i < window_size; i++) {
+        uint64_t value = *(uint64_t *)(readBuffer + buffBegin + i);
+        if (value > max_value) {
+            max_value = value;
+        }
+    }
+
+    for (; i + 8< size; i++) {
+        uint64_t value = *(uint64_t *)(readBuffer + buffBegin + i);
+        if (value > max_value) {
+            return i;
+        }
+    }
+
+    return size;
 }
-
-
 
 Chunker::~Chunker() {}

@@ -23,4 +23,6 @@ FetchContent_MakeAvailable(xxhash)
 add_executable(delta_compress src/main.cpp 
                    src/chunker.cpp)
 
+add_executable(delta_decode src/main_decode.cpp)
+target_link_libraries(delta_decode PRIVATE xxHash::xxhash)
 target_link_libraries(delta_compress PRIVATE xxHash::xxhash)

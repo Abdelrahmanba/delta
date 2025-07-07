@@ -8,7 +8,10 @@
 
 #include "chunker.hpp"
 #define XXH_INLINE_ALL
+#include <string.h>
+
 #include <chrono>
+#include <cstring>
 #include <unordered_map>
 
 #include "xxhash.h"
@@ -19,8 +22,11 @@ namespace fs = std::filesystem;
 
 // ─────────────────────────────────────── Config
 // ──────────────────────────────────────
-static fs::path DATA_DIR =
-    "/mnt/data/fdedup/test_data/storage";  // default data directory
+// static fs::path DATA_DIR =
+//     "/mnt/data/fdedup/test_data/storage";  // default data directory
+static fs::path DATA_DIR = ".";
+
+    
 static fs::path delta_map =
     "/mnt/data/delta/build/delta_map.csv";  // default delta map file
 
@@ -50,79 +56,88 @@ std::vector<std::string> splitCSV(const std::string& line) {
 char bufBaseChunk[1024 * 1024];
 char bufInputChunk[1024 * 1024];
 
+char bufDeltaChunk[1024 * 1024];
+char* deltaPtr =
+    bufDeltaChunk;  // pointer to the current position in the delta buffer
+
 size_t sizeBaseChunk = 0;
 size_t sizeInputChunk = 0;
 
 void readBaseChunk(const fs::path& p) {
     std::ifstream in(p, std::ios::binary | std::ios::ate);
     if (!in) throw std::runtime_error("Cannot open " + p.string());
-    uint8_t* data = nullptr;
+    char* data = nullptr;
     std::streamsize size = in.tellg();
     if (size < 0) throw std::runtime_error("Cannot read " + p.string());
     if (size > sizeof(bufBaseChunk)) {
         throw std::runtime_error("File too large: " + p.string());
     }
     in.seekg(0);
-    in.read(reinterpret_cast<char*>(bufBaseChunk), size);
+    in.read(bufBaseChunk, size);
     sizeBaseChunk = static_cast<size_t>(size);
 }
 
 void readInputChunk(const fs::path& p) {
     std::ifstream in(p, std::ios::binary | std::ios::ate);
     if (!in) throw std::runtime_error("Cannot open " + p.string());
-    uint8_t* data = nullptr;
+    char* data = nullptr;
     std::streamsize size = in.tellg();
     if (size < 0) throw std::runtime_error("Cannot read " + p.string());
     if (size > sizeof(bufInputChunk)) {
         throw std::runtime_error("File too large: " + p.string());
     }
     in.seekg(0);
-    in.read(reinterpret_cast<char*>(bufInputChunk), size);
+    in.read(bufInputChunk, size);
     sizeInputChunk = static_cast<size_t>(size);
 }
+// ---------- minimal vcdiff helpers -------------------------------
+inline void writeVarint(uint32_t v)  // <-- no return value
+{
+    while (v >= 0x80) {
+        *deltaPtr++ = char((v & 0x7F) | 0x80);  // continuation-bit = 1
+        v >>= 7;
+    }
+    *deltaPtr++ = char(v);  // final byte, cont-bit = 0
+}
 
+inline void emitADD(const char* data, size_t len) {
+    *deltaPtr++ = 0x00;                       // ADD, size follows
+    writeVarint(static_cast<uint32_t>(len));  // updates deltaPtr inside
+    std::memcpy(deltaPtr, data, len);
+    deltaPtr += len;  // advance cursor
+}
+
+inline void emitCOPY(size_t addr, size_t len) {
+    *deltaPtr++ = 0x25;  // COPY (var-size, mode 0)
+    writeVarint(static_cast<uint32_t>(len));
+    writeVarint(static_cast<uint32_t>(addr));  // dictionary offset
+}
+// -----------------------------------------------------------------
 struct chunk {
     uint64_t offset;  // offset in the original data
     size_t size;      // length of the chunk
 };
 
+void writeDeltaChunk(){
+    size_t sizeDelta = static_cast<size_t>(deltaPtr - bufDeltaChunk);
+
+    auto hash = XXH3_64bits(bufDeltaChunk, sizeDelta);
+
+    std::ofstream deltaOut("./deltas/" + std::to_string(hash), std::ios::binary);
+    if (deltaOut)
+        deltaOut.write(bufDeltaChunk, sizeDelta);
+    else
+        std::cerr << "Cannot write delta file\n";
+}
+
 void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
     readBaseChunk(basePath);
     readInputChunk(origPath);
 
-    // process input chunk
-    std::unordered_map<uint64_t, chunk>
-        inputChunks;  // use map to keep chunks with their hashes
-    if (sizeInputChunk == 0) return;  // empty input
-    size_t offset = 0;
-    while (offset < sizeInputChunk) {
-        size_t chunkSize =
-            chunker->nextChunk(bufInputChunk, offset, sizeInputChunk);
-        // std::cout << "Chunk at offset: " << offset
-        //           << " with size: " << chunkSize << '\n';
-        // for (int i = 0; i < hash_length; i++) {
-        //     std::cout << bufInputChunk[offset + chunkSize - hash_length + i];  // debug output
-        // }
-        auto hash = XXH3_64bits(
-            bufInputChunk + offset + chunkSize - hash_length, hash_length);
-        struct chunk c;
-        c.offset = offset;
-        c.size = chunkSize;
-        inputChunks[hash] = c;  // store chunk with its hash as key
-        offset += chunkSize;
-    }
-
-    for (const auto& h : inputChunks) {
-        std::cout << "Input chunk hash: " << h.first
-                  << " at offset: " << h.second.offset
-                  << " with size: " << h.second.size << '\n';
-    }
-
-
     std::unordered_map<uint64_t, chunk>
         baseChunks;                  // use map to keep chunks with their hashes
     if (sizeBaseChunk == 0) return;  // empty input
-    offset = 0;
+    size_t offset = 0;
     while (offset < sizeBaseChunk) {
         size_t chunkSize =
             chunker->nextChunk(bufBaseChunk, offset, sizeBaseChunk);
@@ -131,52 +146,53 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
         struct chunk c;
         c.offset = offset;
         c.size = chunkSize;
-        // if (inputChunks.count(hash)) {
-            baseChunks[hash] = c;
-            // std::cout << "Chunk found in input: " << hash
-            //           << " at offset: " << offset << " with size: " << chunkSize
-            //           << '\n';
-        // } else {
-        //     std::cout << "Chunk not found in input: " << hash
-        //               << " at offset: " << offset << " with size: " << chunkSize
-        //               << '\n';
-        // for (int i = 0; i < hash_length; i++) {
-        //     std::cout << bufBaseChunk[offset + chunkSize - hash_length + i] ;  // debug output
-        // }
-        // std::cout << '\n';
-        // }
+        baseChunks[hash] = c;
+
         offset += chunkSize;
     }
-    for (const auto& h : baseChunks) {
-        std::cout << "Base chunk hash: " << h.first
-                  << " at offset: " << h.second.offset
-                  << " with size: " << h.second.size << '\n';
+
+    // process input chunk
+    if (sizeInputChunk == 0) return;  // empty input
+    offset = 0;
+    while (offset < sizeInputChunk) {
+        size_t chunkSize =
+            chunker->nextChunk(bufInputChunk, offset, sizeInputChunk);
+        auto hash = XXH3_64bits(
+            bufInputChunk + offset + chunkSize - hash_length, hash_length);
+        auto baseChunk = baseChunks.find(hash);
+        if (baseChunk != baseChunks.end()) {
+            struct chunk c;
+            c.offset = offset;
+            c.size = chunkSize;
+            if (c.size == baseChunk->second.size &&
+                std::memcmp(bufInputChunk + c.offset,
+                            bufBaseChunk + baseChunk->second.offset,
+                            c.size) == 0) {
+                emitCOPY(baseChunk->second.offset,
+                         c.size);  // <-- only two args now
+                std::cout << "Matched chunk: " << hash << '\n';
+            } else {
+                emitADD(bufInputChunk + c.offset, c.size);
+                std::cout << "Unique chunk: " << hash
+                          << " at offset: " << c.offset
+                          << " with size: " << c.size << '\n';
+                std::cout << "Base chunk: " << baseChunk->first
+                          << " at offset: " << baseChunk->second.offset
+                          << " with size: " << baseChunk->second.size << '\n';
+            }
+        }
+
+        offset += chunkSize;
     }
-
-    // // hash-set for fast lookup
-    // std::unordered_set<Hash64> dict;
-    // for (const auto& h : hBase) {
-    //     dict.insert(h.hash); // insert base chunk hashes into the set
-    // }
-
-    // std::size_t matched = 0;
-    // size_t newSize = 0;
-
-    // for (auto h : hOrig){
-    //     if (dict.count(h.hash)){
-    //         ++matched;
-    //     }
-    //     else{
-    //         newSize += h.size; // accumulate size of unique chunks
-    //     }
-    // }
+    /* ---- finish the window & dump it to disk ---------------------- */
+    writeDeltaChunk();
+    
 }
 
+
+
+
 int main(int argc, char* argv[]) try {
-    // if (argc < 2) {
-    // std::cerr << "Usage: " << argv[0] << " [input.csv] [output.csv]
-    // [data_dir]\n"; return 1;
-    // }
     const fs::path inCsv = argc > 1 ? fs::path{argv[1]} : delta_map;
     const fs::path outCsv = argc > 2 ? fs::path{argv[2]} : "stats.csv";
     if (argc > 3) DATA_DIR = fs::path{argv[3]};  // optional override
@@ -219,6 +235,7 @@ int main(int argc, char* argv[]) try {
         const fs::path origPath = DATA_DIR / fields[1];
         const fs::path basePath = DATA_DIR / fields[2];
 
+        deltaPtr = bufDeltaChunk;  // reset delta pointer
         deltaCompress(origPath, basePath);
 
         // Stats s;
