@@ -14,9 +14,9 @@
 #include <cstring>
 #include <unordered_map>
 
+#include "decode.hpp"
 #include "gdelta.h"
 #include "xxhash.h"
-#include "decode.hpp"
 
 #define hash_length 48
 
@@ -28,9 +28,9 @@ size_t totalDeltaSize = 0;  // total size of all input chunks
 
 // ─────────────────────────────────────── Config
 // ──────────────────────────────────────
-// static fs::path DATA_DIR =
-//     "/mnt/data/fdedup/test_data/storage";  // default data directory
-static fs::path DATA_DIR = "/mnt/data/delta/build/";
+static fs::path DATA_DIR =
+    "/mnt/data/fdedup/test_data/storage";  // default data directory
+// static fs::path DATA_DIR = "/mnt/data/delta/build/";
 
 static fs::path delta_map =
     "/mnt/data/delta/build/delta_map_test.csv";  // default delta map file
@@ -161,12 +161,12 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
             *(reinterpret_cast<uint64_t*>(bufInputChunk + offset));
         size_t loopOffset = offset;  // save the original offset for later use
         size_t loopBaseOffset = baseOffset;  // save the original base offset
-        while (inputValue == baseValue && loopOffset < sizeInputChunk &&
-               loopBaseOffset < sizeBaseChunk) {
-            std::cout << "Matching 8 bytes at offset: " << loopOffset
-                      << ", base offset: " << loopBaseOffset
-                      << ", base value: " << baseValue
-                      << ", input value: " << inputValue << '\n';
+        while (inputValue == baseValue && loopOffset + 8 < sizeInputChunk &&
+               loopBaseOffset + 8 < sizeBaseChunk) {
+            // std::cout << "Matching 8 bytes at offset: " << loopOffset
+            //           << ", base offset: " << loopBaseOffset
+            //           << ", base value: " << baseValue
+            //           << ", input value: " << inputValue << '\n';
             loopOffset += 8;      // advance by 8 bytes (uint64_t)
             loopBaseOffset += 8;  // advance by 8 bytes (uint64_t)
             baseValue =
@@ -176,8 +176,9 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
         }
         if (offset != loopOffset) {
             emitCOPY(baseOffset, loopOffset - offset);
-            std::cout << "Emitted COPY at of size: " << loopOffset - offset << " from offset: " << offset << " to offset: " << loopOffset
-                      << '\n';
+            // std::cout << "Emitted COPY at of size: " << loopOffset - offset
+            //           << " from offset: " << offset
+            //           << " to offset: " << loopOffset << '\n';
         }
         offset = loopOffset;          // update offset to the new position
         baseOffset = loopBaseOffset;  // update baseOffset to the new position
@@ -187,7 +188,7 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
 
         // before that let's make sure the base buffer is not exhausted
         if (baseOffset + 8 >= sizeBaseChunk) {
-            std::cout << "Base chunk stream ended.\n";
+            // std::cout << "Base chunk stream ended.\n";
             break;  // no more base chunks to match against
         }
         size_t currentOffset = offset;
@@ -206,7 +207,8 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
         // this means the base chunk stream has ended. TODO: Don't bother with
         // the rest. emit Add and return.
         if (numberOfchunks != 0) {
-            // std::cout << "Base chunk stream ended before reaching 10 chunks.\n";
+            // std::cout << "Base chunk stream ended before reaching 10
+            // chunks.\n";
         }
         numberOfchunks = 10;  // reset for input chunk
 
@@ -238,6 +240,13 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
                 reinterpret_cast<uint64_t*>(bufBaseChunk + matchedBaseOffset));
             inputValue = *(reinterpret_cast<uint64_t*>(bufInputChunk + offset));
             while (inputValue == baseValue && offset >= (currentOffset + 8)) {
+                // std::cout << "Backtracing to offset: " << offset
+                //           << ", matched base offset: " << matchedBaseOffset
+                //           << ", base value: " << baseValue
+                //           << ", input value: " << inputValue << '\n';
+                if (offset == currentOffset) {
+                    break;  // we are back at the current offset
+                }
                 offset -= 8;  // backtrace by 8 bytes
                 matchedBaseOffset -= 8;
                 inputValue =
@@ -245,7 +254,10 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
                 baseValue = *(reinterpret_cast<uint64_t*>(bufBaseChunk +
                                                           matchedBaseOffset));
             }
-
+            // std::cout << "Backtraced to offset: " << offset
+            //           << ", matched base offset: " << matchedBaseOffset
+            //           << ", current offset: " << currentOffset
+            //           << ", current base offset: " << currentBaseOffset << '\n';
             offset += 8;             // advance offset by 8 bytes
             matchedBaseOffset += 8;  // advance base offset by 8 bytes
             // finer grain backtrace
@@ -255,7 +267,19 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
                 *(reinterpret_cast<uint8_t*>(bufBaseChunk + matchedBaseOffset));
             offset -= 1;  // backtrace by 1 byte
             matchedBaseOffset -= 1;
-            while (inputValue == baseValue && offset >= (currentOffset)) {
+
+            // std::cout << "Backtraced to offset: " << offset
+            //           << ", matched base offset: " << matchedBaseOffset
+            //           << ", current offset: " << currentOffset
+            //           << ", current base offset: " << currentBaseOffset << '\n';
+            while (inputValue_8 == baseValue_8) {
+                if (offset == currentOffset) {
+                    break;  // we are back at the current offset
+                }
+                // std::cout << "Backtracing to offset: " << offset
+                //           << ", matched base offset: " << matchedBaseOffset
+                //           << ", base value: " << baseValue_8
+                //           << ", input value: " << inputValue_8 << '\n';
                 offset -= 1;  // backtrace by 1 byte
                 matchedBaseOffset -= 1;
                 inputValue_8 =
@@ -277,14 +301,15 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
 
             // insertation happened
             if (offset != currentOffset) {
-                std::cout << "inseration happend offset: " << offset
-                          << ", currentOffset: " << currentOffset << '\n';
+                // std::cout << "inseration happend offset: " << offset
+                //           << ", currentOffset: " << currentOffset << '\n';
                 emitADD(bufInputChunk + currentOffset, offset - currentOffset);
             }
-            std::cout << "Emitting COPY from base offset: " << matchedBaseOffset
-                      << ", to current base offset: " << currBaseOffset
-                      << ", size: " << (currBaseOffset - matchedBaseOffset)
-                      << '\n';
+            // std::cout << "Emitting COPY from base offset: " <<
+            // matchedBaseOffset
+            //           << ", to current base offset: " << currBaseOffset
+            //           << ", size: " << (currBaseOffset - matchedBaseOffset)
+            //           << '\n';
             emitCOPY(matchedBaseOffset, currBaseOffset - matchedBaseOffset);
 
             // prepare offset and baseOffset for next iteration
@@ -297,7 +322,8 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
     // emit ADD at the end of the input chunk if any
     if (offset < sizeInputChunk) {
         // std::cout << "Emitting ADD for remaining input chunk from offset: "
-        //           << offset << ", size: " << (sizeInputChunk - offset) << '\n';
+        //           << offset << ", size: " << (sizeInputChunk - offset) <<
+        //           '\n';
         emitADD(bufInputChunk + offset, sizeInputChunk - offset);
     }
     auto end = std::chrono::high_resolution_clock::now();
@@ -305,8 +331,8 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
         std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
             .count();
 
-    std::cout << "generated delta of size: "
-              << (deltaPtr - bufDeltaChunk) << " bytes\n";
+    std::cout << "generated delta of size: " << (deltaPtr - bufDeltaChunk)
+              << " bytes\n";
 
     writeDeltaChunk();
 }
@@ -380,9 +406,8 @@ int main(int argc, char* argv[]) try {
         // std::cout << "Generated delta of size of: " << dSize << '\n';
         // deltaCompressOriginal(origPath, basePath);
         deltaCompress(origPath, basePath);
-        if(decode(bufDeltaChunk, deltaPtr - bufDeltaChunk,
-                   bufBaseChunk, sizeBaseChunk, bufInputChunk,
-                   sizeInputChunk)) {
+        if (decode(bufDeltaChunk, deltaPtr - bufDeltaChunk, bufBaseChunk,
+                   sizeBaseChunk, bufInputChunk, sizeInputChunk)) {
             std::cout << "Decoded output matches the input chunk.\n";
         } else {
             std::cerr << "Decoded output does NOT match the input chunk!\n";
