@@ -201,27 +201,27 @@ uint64_t Chunker::range_scan_geq_sse128(char *buff, uint64_t start_position,
 }
 #endif
 
-size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd)
-{
-    uint32_t i = 0;
-    size_t size = buffEnd - buffBegin;
-    char max_value = readBuffer[i + buffBegin];
-    i++;
-    if (size > maxChunkSize)
-        size = maxChunkSize;
-    else if (size < window_size)
-        return size;
-#ifdef __SSE3__
-    // If SIMD enabled, accelerate find_maximum() and slide depending on
-    // SIMD mode
-    max_value = find_maximum_sse128(readBuffer + buffBegin, 0, window_size,
-    sse_array);
-    return range_scan_geq_sse128(readBuffer + buffBegin, window_size, size,
-                                 max_value);
-#endif
+// size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd)
+// {
+//     uint32_t i = 0;
+//     size_t size = buffEnd - buffBegin;
+//     char max_value = readBuffer[i + buffBegin];
+//     i++;
+//     if (size > maxChunkSize)
+//         size = maxChunkSize;
+//     else if (size < window_size)
+//         return size;
+// #ifdef __SSE3__
+//     // If SIMD enabled, accelerate find_maximum() and slide depending on
+//     // SIMD mode
+//     max_value = find_maximum_sse128(readBuffer + buffBegin, 0, window_size,
+//     sse_array);
+//     return range_scan_geq_sse128(readBuffer + buffBegin, window_size, size,
+//                                  max_value);
+// #endif
 
-    return 0;
-}
+//     return 0;
+// }
 
 // size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd)
 // {
@@ -253,27 +253,27 @@ size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd)
 
 
 
-// size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd)
-// {
-//     uint64_t i = 1;
-//     size_t size = buffEnd - buffBegin;
-//     uint64_t fingerprint = 0;
-//     if (size > maxChunkSize)
-//         size = maxChunkSize;
-//     else if (size < minChunkSize)
-//         return size;
+size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd)
+{
+    uint64_t i = 1;
+    size_t size = buffEnd - buffBegin;
+    uint64_t fingerprint = 0;
+    if (size > maxChunkSize)
+        size = maxChunkSize;
+    else if (size < minChunkSize)
+        return size;
 
 
-//     while (i < size) {
-//         fingerprint = (fingerprint << 1) + GEAR[readBuffer[buffBegin + i]];  // simple hash
-//         if (!(fingerprint & 0x00001800035300)) {
-//             return i;
-//         }
-//         i++;
-//     }
+    while (i < size) {
+        fingerprint = (fingerprint << 1) + GEAR[readBuffer[buffBegin + i]];  // simple hash
+        if (!(fingerprint & 0x000018035100)) {
+            return i;
+        }
+        i++;
+    }
 
-//     return size;
-// }
+    return size;
+}
 
 // size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd) {
 //     uint64_t i = 0;
