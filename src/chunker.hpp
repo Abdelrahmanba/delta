@@ -34,6 +34,7 @@ inline __m128i NotEqual8uSSE(__m128i a, __m128i b) {
 }
 #endif
 
+extern uint64_t fingerprint;
 
 class Chunker {
    public:

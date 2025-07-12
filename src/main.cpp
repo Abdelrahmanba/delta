@@ -19,6 +19,7 @@
 #include "xxhash.h"
 
 #define hash_length 48
+#define DEBUG
 
 namespace fs = std::filesystem;
 
@@ -29,22 +30,22 @@ size_t totalDeltaSize = 0;  // total size of all input chunks
 // ─────────────────────────────────────── Config
 // ──────────────────────────────────────
 static fs::path DATA_DIR =
-    "/mnt/data/fdedup/test_data/storage";  // default data directory
+"/mnt/data/fdedup/test_data/storage";  // default data directory
 // static fs::path DATA_DIR = "/mnt/data/delta/build/";
 
 static fs::path delta_map =
-    "/mnt/data/delta/build/delta_map_test.csv";  // default delta map file
+"/mnt/data/delta/build/delta_map_failing.csv";  // default delta map file
 
 Chunker* chunker = new Chunker();  // global chunker instance
 
 // Handy POD to keep per-file stats
 struct Stats {
-    std::size_t chunks_orig{0};
-    std::size_t chunks_base{0};
-    std::size_t matched{0};
-    std::size_t unique{0};
-    std::uintmax_t bytes_orig{0};
-    std::uintmax_t bytes_base{0};
+    std::size_t chunks_orig{ 0 };
+    std::size_t chunks_base{ 0 };
+    std::size_t matched{ 0 };
+    std::size_t unique{ 0 };
+    std::uintmax_t bytes_orig{ 0 };
+    std::uintmax_t bytes_base{ 0 };
 };
 
 using Hash64 = std::uint64_t;
@@ -63,7 +64,7 @@ char bufInputChunk[1024 * 1024];
 
 char bufDeltaChunk[1024 * 1024];
 char* deltaPtr =
-    bufDeltaChunk;  // pointer to the current position in the delta buffer
+bufDeltaChunk;  // pointer to the current position in the delta buffer
 
 size_t sizeBaseChunk = 0;
 size_t sizeInputChunk = 0;
@@ -146,9 +147,10 @@ void writeDeltaChunk() {
     if (deltaOut) {
         deltaOut.write(bufDeltaChunk, sizeDelta);
         std::cout << "Delta file written: "
-                  << "./deltas/" + std::to_string(hash)
-                  << " with size: " << sizeDelta << '\n';
-    } else
+            << "./deltas/" + std::to_string(hash)
+            << " with size: " << sizeDelta << '\n';
+    }
+    else
         std::cerr << "Cannot write delta file\n";
 }
 
@@ -158,188 +160,183 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
     readBaseChunk(basePath);
     readInputChunk(origPath);
 
-    // std::cout << "Input chunk size: " << sizeInputChunk
-    //           << ", Base chunk size: " << sizeBaseChunk << '\n';
-
     auto start = std::chrono::high_resolution_clock::now();
 
     size_t offset = 0;
     size_t baseOffset = 0;
-    size_t size = std::min(sizeInputChunk, sizeBaseChunk);
+    size_t size = sizeInputChunk > sizeBaseChunk ? sizeBaseChunk : sizeInputChunk;
     while (offset < size) {
-        // std::cout << "Processing offset: " << offset
-        //           << ", baseOffset: " << baseOffset << '\n';
-        uint64_t baseValue =
-            *(reinterpret_cast<uint64_t*>(bufBaseChunk + baseOffset));
-        uint64_t inputValue =
-            *(reinterpret_cast<uint64_t*>(bufInputChunk + offset));
+#ifdef DEBUG
+        std::cout << "Processing offset: " << offset
+            << ", baseOffset: " << baseOffset << '\n';
+#endif
+        uint64_t baseValue = *(reinterpret_cast<uint64_t*>(bufBaseChunk + baseOffset));
+        uint64_t inputValue = *(reinterpret_cast<uint64_t*>(bufInputChunk + offset));
         size_t loopOffset = offset;  // save the original offset for later use
         size_t loopBaseOffset = baseOffset;  // save the original base offset
-        while (inputValue == baseValue && loopOffset + 8 < sizeInputChunk &&
-               loopBaseOffset + 8 < sizeBaseChunk) {
-            // std::cout << "Matching 8 bytes at offset: " << loopOffset
-            //           << ", base offset: " << loopBaseOffset
-            //           << ", base value: " << baseValue
-            //           << ", input value: " << inputValue << '\n';
-            loopOffset += 8;      // advance by 8 bytes (uint64_t)
-            loopBaseOffset += 8;  // advance by 8 bytes (uint64_t)
-            baseValue =
-                *(reinterpret_cast<uint64_t*>(bufBaseChunk + loopBaseOffset));
-            inputValue =
-                *(reinterpret_cast<uint64_t*>(bufInputChunk + loopOffset));
+        while (inputValue == baseValue && loopOffset + 8 <= sizeInputChunk
+            && loopBaseOffset + 8 <= sizeBaseChunk) {
+#ifdef DEBUG
+            std::cout << "Matching 8 bytes at offset: " << loopOffset << ", base offset: " << loopBaseOffset << ", base value: " << baseValue << ", input value: " << inputValue << '\n';
+#endif
+            loopBaseOffset += 8;
+            baseValue = *(reinterpret_cast<uint64_t*>(bufBaseChunk + loopBaseOffset));
+            loopOffset += 8;
+            inputValue = *(reinterpret_cast<uint64_t*>(bufInputChunk + loopOffset));
         }
         if (offset != loopOffset) {
             emitCOPY(baseOffset, loopOffset - offset);
-            // std::cout << "Emitted COPY at of size: " << loopOffset - offset
-            //           << " from offset: " << offset
-            //           << " to offset: " << loopOffset << '\n';
+#ifdef DEBUG
+            std::cout << "Emitted COPY at of size: " << loopOffset - offset
+                << " from offset: " << offset
+                << " to offset: " << loopOffset << '\n';
+#endif
         }
         offset = loopOffset;          // update offset to the new position
         baseOffset = loopBaseOffset;  // update baseOffset to the new position
 
-        // Region of change. We try to find a data anchor in the next
-        // avgChunkSize * 10 bytes
+        // Region of change. We try to find a data anchor
 
         // before that let's make sure the base buffer is not exhausted
         if (baseOffset + 8 >= sizeBaseChunk) {
-            // std::cout << "Base chunk stream ended.\n";
+            std::cout << "Base chunk stream ended.\n";
             break;  // no more base chunks to match against
         }
-        size_t currentOffset = offset;
-        size_t currentBaseOffset = baseOffset;
         std::unordered_map<uint64_t, size_t> baseChunks;
-        size_t numberOfchunks = 10;
-        while (baseOffset < sizeBaseChunk && numberOfchunks > 0) {
+        size_t numberOfchunks = 3;
+        while (loopBaseOffset < sizeBaseChunk && numberOfchunks > 0) {
             size_t nextBaseChunkSize =
-                chunker->nextChunk(bufBaseChunk, baseOffset, sizeBaseChunk);
-            baseOffset += nextBaseChunkSize;
-            // index the offsets using the data it self no hash is needed.
-            baseChunks[*(reinterpret_cast<uint64_t*>(bufBaseChunk + baseOffset -
-                                                     8))] = baseOffset - 8;
+                chunker->nextChunk(bufBaseChunk, loopBaseOffset, sizeBaseChunk);
+            loopBaseOffset += nextBaseChunkSize;
+            baseChunks[fingerprint] = baseOffset - 8;
             numberOfchunks--;
         }
         // this means the base chunk stream has ended. TODO: Don't bother with
         // the rest. emit Add and return.
         if (numberOfchunks != 0) {
-            // std::cout << "Base chunk stream ended before reaching 10 chunks.\n";
+#ifdef DEBUG
+            std::cout << "Base chunk stream ended before reaching 3 chunks.\n";
+#endif
         }
-        numberOfchunks = 10;  // reset for input chunk
+        numberOfchunks = 3;  // reset for input chunk
 
         // init the matchedOffset
-        size_t matchedBaseOffset = currentBaseOffset;
-        while (offset < sizeInputChunk && numberOfchunks > 0) {
-            size_t nextInputChunkSize =
-                chunker->nextChunk(bufInputChunk, offset, sizeInputChunk);
-            offset += nextInputChunkSize;
+        size_t matchedBaseOffset = baseOffset;
+        while (loopOffset < sizeInputChunk && numberOfchunks > 0) {
+            size_t nextInputChunkSize = chunker->nextChunk(bufInputChunk, loopOffset, sizeInputChunk);
+            loopOffset += nextInputChunkSize;
             // query base index for a match
-            auto it = baseChunks.find(
-                *(reinterpret_cast<uint64_t*>(bufInputChunk + offset - 8)));
+            auto it = baseChunks.find(*(reinterpret_cast<uint64_t*>(bufInputChunk + loopOffset - 8)));
             if (it != baseChunks.end()) {
                 matchedBaseOffset = it->second;
-                offset -= 8;  // backtrace to the start of the chunk
-                // stick with the first match
+                loopOffset -= 8;  // to the start of the mattch
+                // stick with the first match TODO: verify that its a good matching point
                 break;
             }
             numberOfchunks--;
         }
         // a match is found. back trace then update offsets.
-        size_t currOff = offset;
+        size_t currOff = loopOffset;
         size_t currBaseOffset = matchedBaseOffset;
-        // std::cout << "Matched base offset: " << matchedBaseOffset
-        //           << ", curr offset: " << currOff << '\n';
-        if (matchedBaseOffset != currentBaseOffset) {
+        if (matchedBaseOffset != baseOffset) {
+#ifdef DEBUG
+            std::cout << "Matched base offset: " << matchedBaseOffset
+                << ", curr offset: " << currOff << '\n';
+#endif
             // pointers to the matched offsets
-            baseValue = *(
-                reinterpret_cast<uint64_t*>(bufBaseChunk + matchedBaseOffset));
-            inputValue = *(reinterpret_cast<uint64_t*>(bufInputChunk + offset));
-            while (inputValue == baseValue && offset >= (currentOffset + 8)) {
-                // std::cout << "Backtracing to offset: " << offset
-                //           << ", matched base offset: " << matchedBaseOffset
-                //           << ", base value: " << baseValue
-                //           << ", input value: " << inputValue << '\n';
-                if (offset == currentOffset) {
-                    break;  // we are back at the current offset
-                }
-                offset -= 8;  // backtrace by 8 bytes
+            baseValue = *(reinterpret_cast<uint64_t*>(bufBaseChunk + matchedBaseOffset));
+            inputValue = *(reinterpret_cast<uint64_t*>(bufInputChunk + loopOffset));
+            while (inputValue == baseValue && loopOffset >= (offset + 8)) {
+#ifdef DEBUG
+                std::cout << "Backtracing to offset: " << loopOffset
+                    << ", matched base offset: " << matchedBaseOffset
+                    << ", base value: " << baseValue
+                    << ", input value: " << inputValue << '\n';
+#endif
+                loopOffset -= 8;  // backtrace by 8 bytes
                 matchedBaseOffset -= 8;
-                inputValue =
-                    *(reinterpret_cast<uint64_t*>(bufInputChunk + offset));
-                baseValue = *(reinterpret_cast<uint64_t*>(bufBaseChunk +
-                                                          matchedBaseOffset));
+                inputValue = *(reinterpret_cast<uint64_t*>(bufInputChunk + loopOffset));
+                baseValue = *(reinterpret_cast<uint64_t*>(bufBaseChunk + matchedBaseOffset));
             }
-            // std::cout << "Backtraced to offset: " << offset
-            //           << ", matched base offset: " << matchedBaseOffset
-            //           << ", current offset: " << currentOffset
-            //           << ", current base offset: " << currentBaseOffset << '\n';
-            offset += 8;             // advance offset by 8 bytes
+            #ifdef DEBUG
+            std::cout << "Backtraced to offset: " << offset
+                << ", matched base offset: " << matchedBaseOffset
+                << ", current offset: " << loopOffset
+                << ", current base offset: " << currBaseOffset << '\n';
+            #endif
+            loopOffset += 8;             // advance offset by 8 bytes
             matchedBaseOffset += 8;  // advance base offset by 8 bytes
             // finer grain backtrace
             uint8_t inputValue_8 =
-                *(reinterpret_cast<uint8_t*>(bufInputChunk + offset));
+                *(reinterpret_cast<uint8_t*>(bufInputChunk + loopOffset));
             uint8_t baseValue_8 =
                 *(reinterpret_cast<uint8_t*>(bufBaseChunk + matchedBaseOffset));
-            // offset -= 1;  // backtrace by 1 byte
-            // matchedBaseOffset -= 1;
 
-            // std::cout << "Backtraced to offset: " << offset
-            //           << ", matched base offset: " << matchedBaseOffset
-            //           << ", current offset: " << currentOffset
-            //           << ", current base offset: " << currentBaseOffset << '\n';
             while (inputValue_8 == baseValue_8) {
-                // std::cout << "Backtracing to offset: " << offset
-                //           << ", matched base offset: " << matchedBaseOffset
-                //           << ", base value: " << baseValue_8
-                //           << ", input value: " << inputValue_8 << '\n';
-                if (offset == currentOffset) {
+                #ifdef DEBUG
+                std::cout << "Backtracing to offset: " << offset
+                          << ", matched base offset: " << matchedBaseOffset
+                          << ", base value: " << baseValue_8
+                          << ", input value: " << inputValue_8 << '\n';
+                #endif
+                if (loopOffset == offset) {
                     break;  // we are back at the current offset
                 }
-                offset -= 1;  // backtrace by 1 byte
+                loopOffset -= 1;  // backtrace by 1 byte
                 matchedBaseOffset -= 1;
-                inputValue_8 =
-                    *(reinterpret_cast<uint8_t*>(bufInputChunk + offset));
-                baseValue_8 = *(reinterpret_cast<uint8_t*>(bufBaseChunk +
-                                                           matchedBaseOffset));
+                inputValue_8 = *(reinterpret_cast<uint8_t*>(bufInputChunk + loopOffset));
+                baseValue_8 = *(reinterpret_cast<uint8_t*>(bufBaseChunk + matchedBaseOffset));
             }
-            offset += 1;             // advance offset by 1 byte
+            loopOffset += 1;             // advance offset by 1 byte
             matchedBaseOffset += 1;  // advance base offset by 1 byte
-            // std::cout << "Backtraced to offset: " << offset
-            //           << ", matched base offset: " << matchedBaseOffset
-            //           << ", base value: " << baseValue
-            //           << ", input value: " << inputValue << '\n';
+            #ifdef DEBUG
+            std::cout << "Backtraced to offset: " << offset
+                      << ", matched base offset: " << matchedBaseOffset
+                      << ", base value: " << baseValue
+                      << ", input value: " << inputValue << '\n';
+            #endif
 
-            // either we are back at offset (if no inserations happend in input
-            // chunk) or we found a mismatch:
-            // 1. emit copy from currentOffset to offset
-            // 2. emit add from offset to currOff
+            // either we are back at offset (if no inserations happend in input chunk) or we found a mismatch:
+            // 1. emit add from offset to loopOffset
+            // 2. emit copy from to loopOffset to offset
 
             // insertation happened
-            if (offset != currentOffset) {
-                // std::cout << "inseration happend offset: " << offset
-                //           << ", currentOffset: " << currentOffset << " of size "
-                //           << (offset - currentOffset) << '\n';
-                emitADD(bufInputChunk + currentOffset, offset - currentOffset);
+            if (loopOffset > offset) {
+                #ifdef DEBUG
+                std::cout << "inseration happend offset (EMIT ADD): " << offset
+                          << ", currentOffset: " << loopOffset << " of size "
+                          << (loopOffset - offset) << '\n';
+                #endif
+                emitADD(bufInputChunk + offset, loopOffset - offset);
             }
-            // std::cout << "Emitting COPY from base offset: " << matchedBaseOffset
-            //           << ", to current base offset: " << currBaseOffset
-            //           << ", size: " << (currBaseOffset - matchedBaseOffset)
-            //           << '\n';
+            #ifdef DEBUG
+            std::cout << "Emitting COPY from base offset: " << matchedBaseOffset
+                      << ", to current base offset: " << currBaseOffset
+                      << ", size: " << (currBaseOffset - matchedBaseOffset)
+                      << '\n';
+            #endif
             emitCOPY(matchedBaseOffset, currBaseOffset - matchedBaseOffset);
 
             // prepare offset and baseOffset for next iteration
             offset = currOff;
             baseOffset = currBaseOffset;
-        } else {
-            // insertation happened
-            if (offset != currentOffset) {
-                // std::cout << "inseration happend offset: " << offset
-                //           << ", currentOffset: " << currentOffset << " of size "
-                //           << (offset - currentOffset) << '\n';
-                emitADD(bufInputChunk + currentOffset, offset - currentOffset);
+        }
+        // if no match was found, we just emit ADD. This is what i will optimize now
+        else {
+         // insertation happened
+            if (loopOffset > offset) {
+            #ifdef DEBUG
+                std::cout << "inseration happend offset (insert ADD): " << offset
+                          << ", currentOffset: " << loopOffset << " of size "
+                          << (loopOffset - offset) << '\n';
+                #endif
+                emitADD(bufInputChunk + offset, loopOffset - offset);
+                offset = loopOffset;  // advance offset to the new position
+                baseOffset = loopBaseOffset;  // advance base offset to the new position
             }
         }
-        // offset += 8;
-        // baseOffset += 8;  // advance by 8 bytes (uint64_t)
-    }
+    } // end while loop
+
     // emit ADD at the end of the input chunk if any
     if (offset < sizeInputChunk) {
         // std::cout << "Emitting ADD for remaining input chunk from offset: "
@@ -349,10 +346,10 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
     auto end = std::chrono::high_resolution_clock::now();
     duration +=
         std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
-            .count();
+        .count();
 
     std::cout << "generated delta of size: " << (deltaPtr - bufDeltaChunk)
-              << " bytes\n";
+        << " bytes\n";
 
     writeDeltaChunk();
 }
@@ -372,13 +369,13 @@ void deltaCompressOriginal(const fs::path& origPath, const fs::path& basePath) {
 
     duration +=
         std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
-            .count();
-    // writeDeltaChunk();
+        .count();
+// writeDeltaChunk();
 }
 int main(int argc, char* argv[]) try {
-    const fs::path inCsv = argc > 1 ? fs::path{argv[1]} : delta_map;
-    const fs::path outCsv = argc > 2 ? fs::path{argv[2]} : "stats.csv";
-    if (argc > 3) DATA_DIR = fs::path{argv[3]};  // optional override
+    const fs::path inCsv = argc > 1 ? fs::path{ argv[1] } : delta_map;
+    const fs::path outCsv = argc > 2 ? fs::path{ argv[2] } : "stats.csv";
+    if (argc > 3) DATA_DIR = fs::path{ argv[3] };  // optional override
 
     std::ifstream in(inCsv);
     if (!in) {
@@ -392,16 +389,16 @@ int main(int argc, char* argv[]) try {
     }
 
     out << "chunks_original,"
-           "chunks_base,"
-           "matched_chunks,"
-           "unique_chunks,"
-           "size_original_bytes,"
-           "size_base_bytes,"
-           "new_dce,"
-           "new_delta_size,"
-           "original_dce,"
-           "original_delta_size"
-           "\n";
+        "chunks_base,"
+        "matched_chunks,"
+        "unique_chunks,"
+        "size_original_bytes,"
+        "size_base_bytes,"
+        "new_dce,"
+        "new_delta_size,"
+        "original_dce,"
+        "original_delta_size"
+        "\n";
 
     std::string header, line;
     std::getline(in, header);  // skip original header line
@@ -418,37 +415,39 @@ int main(int argc, char* argv[]) try {
         const fs::path basePath = DATA_DIR / fields[2];
 
         std::cout << "Processing delta ID: " << delta_id
-                  << ", Original: " << origPath << ", Base: " << basePath
-                  << '\n';
+            << ", Original: " << origPath << ", Base: " << basePath
+            << '\n';
 
         deltaPtr = bufDeltaChunk;  // reset delta pointer
 
         // std::cout << "Generated delta of size of: " << dSize << '\n';
-        deltaCompressOriginal(origPath, basePath);
-        // deltaCompress(origPath, basePath);
-        // if (decode(bufDeltaChunk, deltaPtr - bufDeltaChunk, bufBaseChunk,
-        //            sizeBaseChunk, bufInputChunk, sizeInputChunk)) {
-        //     std::cout << "Decoded output matches the input chunk.\n";
-        // } else {
-        //     std::cerr << "Decoded output does NOT match the input chunk!\n";
-        //     return 1;
-        // }
+        // deltaCompressOriginal(origPath, basePath);
+        deltaCompress(origPath, basePath);
+        if (decode(bufDeltaChunk, deltaPtr - bufDeltaChunk, bufBaseChunk,
+            sizeBaseChunk, bufInputChunk, sizeInputChunk)) {
+            std::cout << "Decoded output matches the input chunk.\n";
+        }
+        else {
+            std::cerr << "Decoded output does NOT match the input chunk!\n";
+            return 1;
+        }
 
         // std::cout << "delta size: " << (deltaPtr - bufDeltaChunk)
         //           << " for chunk: " << fields[1] << '\n';
         totalDeltaSize += (deltaPtr - bufDeltaChunk);
     }
     std::cout << "delta compression ratio : "
-              << ((1 - (static_cast<double>(totalDeltaSize) / totalSize)) *
-                  100.0)
-              << "%\n";
+        << ((1 - (static_cast<double>(totalDeltaSize) / totalSize)) *
+            100.0)
+        << "%\n";
     double throughput = (static_cast<double>(totalSize) / (1024 * 1024)) /
-                        (duration / 1000000000.0);  // MB/s
+        (duration / 1000000000.0);  // MB/s
     std::cout << "Throughput: " << throughput << " MB/s" << std::endl;
 
     std::cout << "Done. Results in " << outCsv << '\n';
     return 0;
-} catch (const std::exception& e) {
+}
+catch (const std::exception& e) {
     std::cerr << "Error: " << e.what() << '\n';
     return 2;
 }

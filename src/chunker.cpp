@@ -251,13 +251,13 @@ uint64_t Chunker::range_scan_geq_sse128(char *buff, uint64_t start_position,
 //     return size;
 // }
 
-
+uint64_t fingerprint = 0;  // Fingerprint for the current chunk
 
 size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd)
 {
     uint64_t i = 1;
     size_t size = buffEnd - buffBegin;
-    uint64_t fingerprint = 0;
+    fingerprint = 0;
     if (size > maxChunkSize)
         size = maxChunkSize;
     else if (size < minChunkSize)
@@ -266,7 +266,7 @@ size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd)
 
     while (i < size) {
         fingerprint = (fingerprint << 1) + GEAR[readBuffer[buffBegin + i]];  // simple hash
-        if (!(fingerprint & 0x000018035100)) {
+        if (!(fingerprint & 0x00001800035300)) {
             return i;
         }
         i++;
