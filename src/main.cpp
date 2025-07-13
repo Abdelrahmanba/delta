@@ -20,6 +20,9 @@
 
 #define hash_length 48
 // #define DEBUG
+#define NUMBER_OF_CHUNKS 4
+#define CHUNKS_MULTIPLIER 5
+
 
 namespace fs = std::filesystem;
 
@@ -199,11 +202,11 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
 
         // before that let's make sure the base buffer is not exhausted
         if (baseOffset + 8 >= sizeBaseChunk) {
-            std::cout << "Base chunk stream ended.\n";
+            // std::cout << "Base chunk stream ended.\n";
             break;  // no more base chunks to match against
         }
         std::unordered_map<uint64_t, size_t> baseChunks;
-        size_t numberOfchunks = 4;
+        size_t numberOfchunks = NUMBER_OF_CHUNKS;
         while (loopBaseOffset < sizeBaseChunk && numberOfchunks > 0) {
             size_t nextBaseChunkSize =
                 chunker->nextChunk(bufBaseChunk, loopBaseOffset, sizeBaseChunk);
@@ -222,7 +225,7 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
             std::cout << "Base chunk stream ended before reaching 3 chunks.\n";
 #endif
         }
-        numberOfchunks = 4;  // reset for input chunk
+        numberOfchunks = NUMBER_OF_CHUNKS;
 
         // init the matchedOffset
         size_t matchedBaseOffset = baseOffset;
@@ -340,7 +343,7 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
             std::cout << "[FIRST] No match was found at offset: " << offset << '\n';
 #endif
 
-            numberOfchunks = 16;
+            numberOfchunks = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER - NUMBER_OF_CHUNKS;
             while (loopBaseOffset < sizeBaseChunk && numberOfchunks > 0) {
                 size_t nextBaseChunkSize =
                     chunker->nextChunk(bufBaseChunk, loopBaseOffset, sizeBaseChunk);
@@ -359,7 +362,7 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
                 std::cout << "Base chunk stream ended before reaching 3 chunks.\n";
 #endif
             }
-            numberOfchunks = 20;  // reset for input chunk
+            numberOfchunks = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER;  // reset for input chunk
             loopOffset = offset;  // reset loopOffset
             // init the matchedOffset
             size_t matchedBaseOffset = baseOffset;

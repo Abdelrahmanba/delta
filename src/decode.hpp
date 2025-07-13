@@ -92,6 +92,10 @@ void decode(const fs::path& deltaPath, const fs::path& basePath)
             case 0x25: {                    // COPY (size varint, addr varint)
                 uint32_t len  = readVarint(p, end);
                 uint32_t addr = readVarint(p, end);
+                #ifdef DEBUG
+                std::cout << "COPY instruction: addr = " << addr
+                          << ", len = " << len << ", addr + len = " << (addr + len) << '\n';
+                #endif
                 if (addr + len > baseBuf.size())
                     throw std::runtime_error("COPY out of bounds");
                 out.insert(out.end(),
@@ -161,6 +165,10 @@ bool decode(const char*  deltaBuf,  std::size_t deltaSize,
             case 0x25: {                  // COPY (size varint, addr varint)
                 uint32_t len  = readVarint(p, end);
                 uint32_t addr = readVarint(p, end);
+                #ifdef DEBUG
+                std::cout << "COPY instruction: addr = " << addr
+                          << ", len = " << len << ", addr + len = " << (addr + len) << '\n';
+                #endif
                 if (addr + len > baseSize)
                     throw std::runtime_error("COPY out of bounds");
                 out.insert(out.end(),
