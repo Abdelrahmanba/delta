@@ -19,7 +19,7 @@
 #include "xxhash.h"
 
 #define hash_length 48
-// #define DEBUG
+#define DEBUG
 #define NUMBER_OF_CHUNKS 4
 #define CHUNKS_MULTIPLIER 5
 
@@ -262,7 +262,7 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
             baseValue = *(reinterpret_cast<uint64_t*>(bufBaseChunk + matchedBaseOffset));
             inputValue = *(reinterpret_cast<uint64_t*>(bufInputChunk + loopOffset));
             while (inputValue == baseValue && loopOffset >= (offset + 8) && 
-                matchedBaseOffset - 8 >= 0) {
+                matchedBaseOffset >=8) {
 #ifdef DEBUG
                 std::cout << "Backtracing to offset: " << loopOffset
                     << ", matched base offset: " << matchedBaseOffset
@@ -402,7 +402,8 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
             // pointers to the matched offsets
                 baseValue = *(reinterpret_cast<uint64_t*>(bufBaseChunk + matchedBaseOffset));
                 inputValue = *(reinterpret_cast<uint64_t*>(bufInputChunk + loopOffset));
-                while (inputValue == baseValue && loopOffset >= (offset + 8) && matchedBaseOffset - 8 >= 0) {
+                while (inputValue == baseValue && loopOffset >= (offset + 8) && 
+                matchedBaseOffset >=8) {
 #ifdef DEBUG
                     std::cout << "[SECOND] Backtracing to offset: " << loopOffset
                         << ", matched base offset: " << matchedBaseOffset
