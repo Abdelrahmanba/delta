@@ -109,8 +109,8 @@ Chunker::Chunker() {
 }
 
 #if defined(__SSE3__)
-uint8_t Chunker::find_maximum_sse128(char *buff, uint64_t start_pos,
-                                     uint64_t end_pos, __m128i *xmm_array) {
+uint8_t Chunker::find_maximum_sse128(char* buff, uint64_t start_pos,
+                                     uint64_t end_pos, __m128i* xmm_array) {
     // Assume window_size is a multiple of SSE_REGISTER_SIZE_BYTES for now
     // Assume num_vectors is even for now - True for most common window sizes.
     // Can fix later via specific check
@@ -125,7 +125,7 @@ uint8_t Chunker::find_maximum_sse128(char *buff, uint64_t start_pos,
     // 64-bit
     for (uint64_t i = 0; i < num_vectors; i++)
         xmm_array[i] = _mm_loadu_si128((
-            __m128i const *)(buff + start_pos + (SSE_REGISTER_SIZE_BYTES * i)));
+            __m128i const*)(buff + start_pos + (SSE_REGISTER_SIZE_BYTES * i)));
 
     // Repeat vmaxu until a single register is remaining with maximum values
     // Each iteration calculates maximums between a pair of registers and moves
@@ -141,9 +141,9 @@ uint8_t Chunker::find_maximum_sse128(char *buff, uint64_t start_pos,
     }
 
     // Move the final set of values from the xmm into local memory
-    uint8_t result_store[SSE_REGISTER_SIZE_BYTES] = {0};
+    uint8_t result_store[SSE_REGISTER_SIZE_BYTES] = { 0 };
 
-    _mm_storeu_si128((__m128i *)&result_store, xmm_array[0]);
+    _mm_storeu_si128((__m128i*) & result_store, xmm_array[0]);
 
     // Sequentially scan the last remaining bytes (128 in this case) to find the
     // max value
@@ -156,7 +156,7 @@ uint8_t Chunker::find_maximum_sse128(char *buff, uint64_t start_pos,
     return max_val;
 }
 
-uint64_t Chunker::range_scan_geq_sse128(char *buff, uint64_t start_position,
+uint64_t Chunker::range_scan_geq_sse128(char* buff, uint64_t start_position,
                                         uint64_t end_position,
                                         uint8_t target_value) {
     uint64_t num_vectors =
@@ -175,7 +175,7 @@ uint64_t Chunker::range_scan_geq_sse128(char *buff, uint64_t start_position,
     for (uint64_t i = 0; i < num_vectors; i++) {
         curr_scan_start = start_position + (i * SSE_REGISTER_SIZE_BYTES);
         // Load data into xmm register
-        xmm_array = _mm_loadu_si128((__m128i const *)(buff + curr_scan_start));
+        xmm_array = _mm_loadu_si128((__m128i const*)(buff + curr_scan_start));
 
         /*
          Compare values with max_value. If a byte in xmm_array is geq
@@ -253,25 +253,26 @@ uint64_t Chunker::range_scan_geq_sse128(char *buff, uint64_t start_position,
 
 uint64_t fingerprint = 0;  // Fingerprint for the current chunk
 
-size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd)
+size_t Chunker::nextChunk(char* readBuffer, size_t buffBegin, size_t buffEnd)
 {
     uint64_t i = 9;
     size_t size = buffEnd - buffBegin;
     fingerprint = 0;
     if (size > maxChunkSize)
         size = maxChunkSize;
-    else if (size < minChunkSize)
-        return size;
 
 
     while (i < size) {
         fingerprint = (fingerprint << 1) + GEAR[readBuffer[buffBegin + i]];  // simple hash
         if (!(fingerprint & 0x00001800035300)) {
+            std::cout << "Chunker::nextChunk: Fingerprint: " << fingerprint
+                << ", size: " << size << '\n';
             return i;
         }
         i++;
     }
-
+    std::cout << "Chunker::nextChunk size: Fingerprint: " << fingerprint
+        << ", size: " << size << '\n';
     return size;
 }
 
