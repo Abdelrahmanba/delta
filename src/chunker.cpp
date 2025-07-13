@@ -255,7 +255,7 @@ uint64_t fingerprint = 0;  // Fingerprint for the current chunk
 
 size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd)
 {
-    uint64_t i = 8;
+    uint64_t i = 9;
     size_t size = buffEnd - buffBegin;
     fingerprint = 0;
     if (size > maxChunkSize)
@@ -264,7 +264,7 @@ size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd)
         return size;
 
 
-    while (i + 8 < size) {
+    while (i < size) {
         fingerprint = (fingerprint << 1) + GEAR[readBuffer[buffBegin + i]];  // simple hash
         if (!(fingerprint & 0x00001800035300)) {
             return i;
