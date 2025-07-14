@@ -262,17 +262,14 @@ size_t Chunker::nextChunk(char* readBuffer, size_t buffBegin, size_t buffEnd)
         size = maxChunkSize;
 
 
-    while (i < size) {
-        fingerprint = (fingerprint << 1) + GEAR[readBuffer[buffBegin + i]];  // simple hash
-        if (!(fingerprint & 0x00001800035300)) {
-            std::cout << "Chunker::nextChunk: Fingerprint: " << fingerprint
-                << ", size: " << size << '\n';
+    while (i +1 < size) {
+        // fingerprint = (fingerprint << 1) + GEAR[readBuffer[buffBegin + i]];  // simple hash
+        fingerprint = (fingerprint << 2) + GEAR[readBuffer[buffBegin + i]] + GEAR[readBuffer[buffBegin + i +1]];
+        if (!(fingerprint & 0x000018035100)) {
             return i;
         }
-        i++;
+        i+=2;
     }
-    std::cout << "Chunker::nextChunk size: Fingerprint: " << fingerprint
-        << ", size: " << size << '\n';
     return size;
 }
 
