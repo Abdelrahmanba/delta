@@ -263,12 +263,32 @@ size_t Chunker::nextChunk(char* readBuffer, size_t buffBegin, size_t buffEnd)
 
 
     while (i +1 < size) {
-        // fingerprint = (fingerprint << 1) + GEAR[readBuffer[buffBegin + i]];  // simple hash
-        fingerprint = (fingerprint << 2) + GEAR[readBuffer[buffBegin + i]] + GEAR[readBuffer[buffBegin + i +1]];
+        fingerprint = (fingerprint << 1) + GEAR[readBuffer[buffBegin + i]];  // simple hash
+        // fingerprint = (fingerprint << 2) + GEAR[readBuffer[buffBegin + i]] + GEAR[readBuffer[buffBegin + i +1]];
         if (!(fingerprint & 0x000018035100)) {
             return i;
         }
-        i+=2;
+        i+=1;
+    }
+    return size;
+}
+
+size_t Chunker::nextChunkBig(char* readBuffer, size_t buffBegin, size_t buffEnd)
+{
+    uint64_t i = 9;
+    size_t size = buffEnd - buffBegin;
+    fingerprint = 0;
+    if (size > maxChunkSize)
+        size = maxChunkSize;
+
+
+    while (i +1 < size) {
+        fingerprint = (fingerprint << 1) + GEAR[readBuffer[buffBegin + i]];  // simple hash
+        // fingerprint = (fingerprint << 2) + GEAR[readBuffer[buffBegin + i]] + GEAR[readBuffer[buffBegin + i +1]];
+        if (!(fingerprint & 0x00001800035300)) {
+            return i;
+        }
+        i+=1;
     }
     return size;
 }

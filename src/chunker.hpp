@@ -43,6 +43,8 @@ class Chunker {
 
     size_t nextChunk(char *readBuffer, size_t buffBegin,
                      size_t buffEnd);
+    size_t nextChunkBig(char *readBuffer, size_t buffBegin,
+                        size_t buffEnd);
     uint8_t find_maximum_sse128(char *buff, uint64_t start_pos,
                                 uint64_t end_pos, __m128i *xmm_array);
     uint64_t range_scan_geq_sse128(char *buff, uint64_t start_position,
