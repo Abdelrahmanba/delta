@@ -33,11 +33,11 @@ size_t totalDeltaSize = 0;  // total size of all input chunks
 // ─────────────────────────────────────── Config
 // ──────────────────────────────────────
 static fs::path DATA_DIR =
-"/mnt/data/fdedup/test_data/storage";  // default data directory
+"../../storage";  // default data directory
 // static fs::path DATA_DIR = "/mnt/data/delta/build/";
 
 static fs::path delta_map =
-"/mnt/data/delta/build/delta_map_full.csv";  // default delta map file
+"./delta_map_failing.csv";  // default delta map file
 
 Chunker* chunker = new Chunker();  // global chunker instance
 
@@ -629,7 +629,7 @@ int main(int argc, char* argv[]) try {
         << (static_cast<double>(totalSize) / totalDeltaSize);
     double throughput = (static_cast<double>(totalSize) / (1024 * 1024)) /
         (duration / 1000000000.0);  // MB/s
-    std::cout << "Throughput: " << throughput << " MB/s" << std::endl;
+    std::cout << " Throughput: " << throughput << " MB/s" << std::endl;
 
     std::cout << "Done. Results in " << outCsv << '\n';
     return 0;

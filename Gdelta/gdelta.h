@@ -20,9 +20,7 @@ using namespace std;
 #define DEBUG_UNITS 0
 
 int gencode(uint8_t *newBuf, uint32_t newSize, uint8_t *baseBuf,
-            uint32_t baseSize, uint8_t **deltaBuf, uint32_t *deltaSize
-            ,uint32_t baseOffset
-        );
+            uint32_t baseSize, uint8_t **deltaBuf, uint32_t *deltaSize);
 
 
 int gdecode(uint8_t *deltaBuf, uint32_t deltaSize, uint8_t *baseBuf,
