@@ -6,7 +6,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include "chunker.hpp"
 #define XXH_INLINE_ALL
 #include <string.h>
 
@@ -27,7 +26,13 @@
 // #define DEBUG
 // #define VORBSE
 
-
+#if defined(__GNUC__) || defined(__clang__)
+  #define LIKELY(x)   (__builtin_expect(!!(x), 1))
+  #define UNLIKELY(x) (__builtin_expect(!!(x), 0))
+#else
+  #define LIKELY(x)   (x)
+  #define UNLIKELY(x) (x)
+#endif
 
 namespace fs = std::filesystem;
 
@@ -49,7 +54,6 @@ static fs::path delta_map =
 "./delta_map_failing.csv";  // default delta map file
 // "/mydata/fdedup/test_data/delta_map.csv";  // default delta map file
 
-Chunker* chunker = new Chunker();  // global chunker instance
 
 
 using Hash64 = std::uint64_t;
@@ -197,81 +201,81 @@ inline size_t nextChunkBig(char* readBuffer, size_t buffBegin, size_t buffEnd)
     return size;
 }
 
-alignas(64) char bufBaseChunk[1024 * 1024];
-alignas(64) char bufInputChunk[1024 * 1024];
-alignas(64) char bufDeltaChunk[1024 * 1024];
+alignas(64) char bufBaseChunk[1024 * 65];
+alignas(64) char bufInputChunk[1024 * 65];
+alignas(64) char bufDeltaChunk[1024 * 65];
 char* deltaPtr = bufDeltaChunk;  // pointer to the current position in the delta buffer
 
 size_t sizeBaseChunk = 0;
 size_t sizeInputChunk = 0;
 
 
-struct TinyMapSIMD {
-    static constexpr size_t kCap = 32;           // >= 12
-    alignas(32) uint64_t keys[kCap];
-    size_t               vals[kCap];
-    size_t               count = 0;
+// struct TinyMapSIMD {
+//     static constexpr size_t kCap = 32;           // >= 12
+//     alignas(32) uint64_t keys[kCap];
+//     size_t               vals[kCap];
+//     size_t               count = 0;
 
-    inline void clear() {
-        // Mark unused keys with a value that never occurs
-        for (size_t i = 0; i < kCap; ++i) keys[i] = UINT64_C(0xFFFFFFFFFFFFFFFF);
-        count = 0;
-    }
+//     inline void clear() {
+//         // Mark unused keys with a value that never occurs
+//         for (size_t i = 0; i < kCap; ++i) keys[i] = UINT64_C(0xFFFFFFFFFFFFFFFF);
+//         count = 0;
+//     }
 
-    TinyMapSIMD() { clear(); }
+//     TinyMapSIMD() { clear(); }
 
-    inline bool find(uint64_t key, uint32_t& out) const {
-#if defined(__AVX2__)
-        const __m256i k = _mm256_set1_epi64x((long long)key);
-        // block 0: indices 0..3
-        __m256i v0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&keys[0]));
-        __m256i v1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&keys[4]));
-        __m256i v2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&keys[8]));
-        __m256i v3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&keys[12]));
+//     inline bool find(uint64_t key, uint32_t& out) const {
+// #if defined(__AVX2__)
+//         const __m256i k = _mm256_set1_epi64x((long long)key);
+//         // block 0: indices 0..3
+//         __m256i v0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&keys[0]));
+//         __m256i v1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&keys[4]));
+//         __m256i v2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&keys[8]));
+//         __m256i v3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(&keys[12]));
 
-        __m256i m0 = _mm256_cmpeq_epi64(k, v0);
-        __m256i m1 = _mm256_cmpeq_epi64(k, v1);
-        __m256i m2 = _mm256_cmpeq_epi64(k, v2);
-        __m256i m3 = _mm256_cmpeq_epi64(k, v3);
+//         __m256i m0 = _mm256_cmpeq_epi64(k, v0);
+//         __m256i m1 = _mm256_cmpeq_epi64(k, v1);
+//         __m256i m2 = _mm256_cmpeq_epi64(k, v2);
+//         __m256i m3 = _mm256_cmpeq_epi64(k, v3);
 
-        unsigned mask0 = (unsigned)_mm256_movemask_pd(_mm256_castsi256_pd(m0));
-        unsigned mask1 = (unsigned)_mm256_movemask_pd(_mm256_castsi256_pd(m1));
-        unsigned mask2 = (unsigned)_mm256_movemask_pd(_mm256_castsi256_pd(m2));
-        unsigned mask3 = (unsigned)_mm256_movemask_pd(_mm256_castsi256_pd(m3));
+//         unsigned mask0 = (unsigned)_mm256_movemask_pd(_mm256_castsi256_pd(m0));
+//         unsigned mask1 = (unsigned)_mm256_movemask_pd(_mm256_castsi256_pd(m1));
+//         unsigned mask2 = (unsigned)_mm256_movemask_pd(_mm256_castsi256_pd(m2));
+//         unsigned mask3 = (unsigned)_mm256_movemask_pd(_mm256_castsi256_pd(m3));
 
-        if (mask0) { int idx = __builtin_ctz(mask0); out = vals[idx]; return true; }
-        if (mask1) { int idx = __builtin_ctz(mask1) + 4; out = vals[idx]; return true; }
-        if (mask2) { int idx = __builtin_ctz(mask2) + 8; out = vals[idx]; return true; }
-        if (mask3) { int idx = __builtin_ctz(mask3) + 12; out = vals[idx]; return true; }
-        return false;
-#else
-        // scalar fallback (still fast for 12)
-        for (size_t i = 0; i < count; ++i) {
-            if (keys[i] == key) { out = vals[i]; return true; }
-        }
-        return false;
-#endif
-    }
+//         if (mask0) { int idx = __builtin_ctz(mask0); out = vals[idx]; return true; }
+//         if (mask1) { int idx = __builtin_ctz(mask1) + 4; out = vals[idx]; return true; }
+//         if (mask2) { int idx = __builtin_ctz(mask2) + 8; out = vals[idx]; return true; }
+//         if (mask3) { int idx = __builtin_ctz(mask3) + 12; out = vals[idx]; return true; }
+//         return false;
+// #else
+//         // scalar fallback (still fast for 12)
+//         for (size_t i = 0; i < count; ++i) {
+//             if (keys[i] == key) { out = vals[i]; return true; }
+//         }
+//         return false;
+// #endif
+//     }
 
-    // insert or update
-    inline void upsert(uint64_t key, uint32_t value) {
-        uint32_t v;
-        if (find(key, v)) {
-            // update existing
-            // re-find index cheaply (small count; linear)
-            for (size_t i = 0; i < count; ++i) if (keys[i] == key) { vals[i] = value; return; }
-            return;
-        }
-        // append
-        // assume count < kCap (assert in debug)
-#ifndef NDEBUG
-        if (count >= kCap) __builtin_trap();
-#endif
-        keys[count] = key;
-        vals[count] = value;
-        ++count;
-    }
-};
+//     // insert or update
+//     inline void upsert(uint64_t key, uint32_t value) {
+//         uint32_t v;
+//         if (find(key, v)) {
+//             // update existing
+//             // re-find index cheaply (small count; linear)
+//             for (size_t i = 0; i < count; ++i) if (keys[i] == key) { vals[i] = value; return; }
+//             return;
+//         }
+//         // append
+//         // assume count < kCap (assert in debug)
+// #ifndef NDEBUG
+//         if (count >= kCap) __builtin_trap();
+// #endif
+//         keys[count] = key;
+//         vals[count] = value;
+//         ++count;
+//     }
+// };
 
 void inline readBaseChunk(const fs::path& p) {
     std::ifstream in(p, std::ios::binary | std::ios::ate);
@@ -789,13 +793,13 @@ inline bool memeq_32(const void* a, const void* b) {
 #if defined(__AVX2__)
     __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a));
     __m256i vb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b));
-    __m256i x  = _mm256_xor_si256(va, vb);
+    __m256i x = _mm256_xor_si256(va, vb);
     return _mm256_testz_si256(x, x);
 #else
     const uint64_t* pa = reinterpret_cast<const uint64_t*>(a);
     const uint64_t* pb = reinterpret_cast<const uint64_t*>(b);
     // Unaligned 64-bit loads are okay on x86; if you target other arches, keep memcpy
-    return ((pa[0]^pb[0]) | (pa[1]^pb[1]) | (pa[2]^pb[2]) | (pa[3]^pb[3])) == 0;
+    return ((pa[0] ^ pb[0]) | (pa[1] ^ pb[1]) | (pa[2] ^ pb[2]) | (pa[3] ^ pb[3])) == 0;
 #endif
 }
 
@@ -807,8 +811,8 @@ inline bool memeq_64(const void* a, const void* b) {
 #else
     const uint64_t* pa = reinterpret_cast<const uint64_t*>(a);
     const uint64_t* pb = reinterpret_cast<const uint64_t*>(b);
-    return ((pa[0]^pb[0]) | (pa[1]^pb[1]) | (pa[2]^pb[2]) | (pa[3]^pb[3]) |
-            (pa[4]^pb[4]) | (pa[5]^pb[5]) | (pa[6]^pb[6]) | (pa[7]^pb[7])) == 0;
+    return ((pa[0] ^ pb[0]) | (pa[1] ^ pb[1]) | (pa[2] ^ pb[2]) | (pa[3] ^ pb[3]) |
+            (pa[4] ^ pb[4]) | (pa[5] ^ pb[5]) | (pa[6] ^ pb[6]) | (pa[7] ^ pb[7])) == 0;
 #endif
 }
 
@@ -821,8 +825,8 @@ inline bool memeq_128(const void* a, const void* b) {
 #elif defined(__AVX2__)
     const uint8_t* pa = static_cast<const uint8_t*>(a);
     const uint8_t* pb = static_cast<const uint8_t*>(b);
-    __m256i a0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pa +  0));
-    __m256i b0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pb +  0));
+    __m256i a0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pa + 0));
+    __m256i b0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pb + 0));
     __m256i a1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pa + 32));
     __m256i b1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pb + 32));
     __m256i a2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pa + 64));
@@ -837,72 +841,148 @@ inline bool memeq_128(const void* a, const void* b) {
 
     __m256i o01 = _mm256_or_si256(x0, x1);
     __m256i o23 = _mm256_or_si256(x2, x3);
-    __m256i o   = _mm256_or_si256(o01, o23);
+    __m256i o = _mm256_or_si256(o01, o23);
     return _mm256_testz_si256(o, o);
 #else
     // Scalar fallback
-    return memeq_64(a, b) && memeq_64(static_cast<const uint8_t*>(a)+64,
-                                      static_cast<const uint8_t*>(b)+64);
+    return memeq_64(a, b) && memeq_64(static_cast<const uint8_t*>(a) + 64,
+                                      static_cast<const uint8_t*>(b) + 64);
 #endif
 }
 
 
+struct alignas(64) TinyMapSIMD {
+    static constexpr uint32_t kCap = 16;
+
+    uint64_t fp[kCap];   // fingerprints
+    uint32_t off[kCap];  // offsets
+    uint32_t count;      // 0..16
+
+    inline TinyMapSIMD() { clear(); }
+
+    inline void clear() {
+        // We only need to reset count; fp/off content can remain.
+        // To be extra safe against vector path matching garbage beyond count,
+        // we keep the scalar find as default. If you want a vector path,
+        // either guard by count or prefill sentinels here.
+        count = 0;
+    }
+
+    // Insert or overwrite the existing fingerprint's offset.
+    inline void upsert(uint64_t fingerprint, uint32_t offset) {
+        fp[count] = fingerprint;
+        off[count] = offset;
+        ++count;
+    }
+    // Optional AVX2 finder (disabled by default). Enable if you want.
+    inline bool find(uint64_t fingerprint, uint32_t& outOffset) const {
+#if defined(__AVX2__)
+
+        // Load up to 16 lanes (4 loads of 4x64). Safe because arrays are full-size.
+        __m256i key = _mm256_set1_epi64x((long long)fingerprint);
+
+        const __m256i a0 = _mm256_loadu_si256((const __m256i*) & fp[0]);   // lanes 0..3
+        const __m256i a1 = _mm256_loadu_si256((const __m256i*) & fp[4]);   // 4..7
+        const __m256i a2 = _mm256_loadu_si256((const __m256i*) & fp[8]);   // 8..11
+        const __m256i a3 = _mm256_loadu_si256((const __m256i*) & fp[12]);  // 12..15
+
+        const __m256i m0 = _mm256_cmpeq_epi64(a0, key);
+        const __m256i m1 = _mm256_cmpeq_epi64(a1, key);
+        const __m256i m2 = _mm256_cmpeq_epi64(a2, key);
+        const __m256i m3 = _mm256_cmpeq_epi64(a3, key);
+
+        // Convert masks to per-lane hits:
+        // movemask gives 32 bits; every equal 64-bit lane sets 8 bits to 1.
+        uint32_t mm0 = (uint32_t)_mm256_movemask_epi8(m0);
+        uint32_t mm1 = (uint32_t)_mm256_movemask_epi8(m1);
+        uint32_t mm2 = (uint32_t)_mm256_movemask_epi8(m2);
+        uint32_t mm3 = (uint32_t)_mm256_movemask_epi8(m3);
+
+        // Helper to scan first hit within a 4-lane group
+        auto first_lane = [](uint32_t mm)->int {
+            // Each 64-bit lane corresponds to 8 mask bits.
+            for (int lane = 0; lane < 4; ++lane) {
+                if (mm & (0xFFu << (lane * 8))) return lane;
+            }
+            return -1;
+            };
+
+        int grp = -1, lane = -1;
+
+        if (mm0) { grp = 0; lane = first_lane(mm0); }
+        else if (mm1) { grp = 1; lane = first_lane(mm1); }
+        else if (mm2) { grp = 2; lane = first_lane(mm2); }
+        else if (mm3) { grp = 3; lane = first_lane(mm3); }
+
+        if (lane >= 0) {
+            uint32_t idx = (uint32_t)(grp * 4 + lane);
+            if (idx < count && fp[idx] == fingerprint) {
+                outOffset = off[idx];
+                return true;
+            }
+        }
+        return false;
+#endif
+    }
+};
+
 alignas(64) TinyMapSIMD baseChunks;
+
 void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
     readBaseChunk(basePath);
     readInputChunk(origPath);
 
-    constexpr uint32_t CMP_LENGTH        = 128;
-    constexpr uint32_t CMP_LENGTH_SHORT  = 8;
+    constexpr uint32_t CMP_LENGTH = 128;
+    constexpr uint32_t CMP_LENGTH_SHORT = 8;
 
-    const char* const in   = bufInputChunk;
+    const char* const in = bufInputChunk;
     const char* const base = bufBaseChunk;
 
-    const uint32_t inSize   = sizeInputChunk;
+    const uint32_t inSize = sizeInputChunk;
     const uint32_t baseSize = sizeBaseChunk;
 
-    const char* const inBeg   = in;
+    const char* const inBeg = in;
     const char* const baseBeg = base;
-    const char* const inEnd   = in   + inSize;
+    const char* const inEnd = in + inSize;
     const char* const baseEnd = base + baseSize;
 
     // absolute last positions where an N‑byte compare is still valid
-    const char* const inEnd128Abs   = (inSize   >= CMP_LENGTH)       ? inEnd   - CMP_LENGTH       : inBeg;
-    const char* const baseEnd128Abs = (baseSize >= CMP_LENGTH)       ? baseEnd - CMP_LENGTH       : baseBeg;
-    const char* const inEnd8Abs     = (inSize   >= CMP_LENGTH_SHORT) ? inEnd   - CMP_LENGTH_SHORT : inBeg;
-    const char* const baseEnd8Abs   = (baseSize >= CMP_LENGTH_SHORT) ? baseEnd - CMP_LENGTH_SHORT : baseBeg;
+    const char* const inEnd128Abs = (inSize >= CMP_LENGTH) ? inEnd - CMP_LENGTH : inBeg;
+    const char* const baseEnd128Abs = (baseSize >= CMP_LENGTH) ? baseEnd - CMP_LENGTH : baseBeg;
+    const char* const inEnd8Abs = (inSize >= CMP_LENGTH_SHORT) ? inEnd - CMP_LENGTH_SHORT : inBeg;
+    const char* const baseEnd8Abs = (baseSize >= CMP_LENGTH_SHORT) ? baseEnd - CMP_LENGTH_SHORT : baseBeg;
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    uint32_t offset     = 0; // canonical positions
+    uint32_t offset = 0; // canonical positions
     uint32_t baseOffset = 0;
 
     // main loop
     for (;;) {
         // Stop if either stream cannot sustain another 128‑byte probe.
-        if ((inBeg + offset)  > inEnd128Abs ||
+        if ((inBeg + offset) > inEnd128Abs ||
             (baseBeg + baseOffset) > baseEnd128Abs) {
             break;
         }
 
         // ---- forward match with fixed sizes (128 then 8) ----
-        const char* pIn   = inBeg   + offset;
+        const char* pIn = inBeg + offset;
         const char* pBase = baseBeg + baseOffset;
 
-        while (pIn   <= inEnd128Abs   &&
+        while (pIn <= inEnd128Abs &&
                pBase <= baseEnd128Abs &&
             //    std::memcmp(pIn, pBase, CMP_LENGTH) == 0)
                (memeq_128(pIn, pBase))
             )
         {
-            pIn   += CMP_LENGTH;
+            pIn += CMP_LENGTH;
             pBase += CMP_LENGTH;
         }
-        while (pIn   <= inEnd8Abs   &&
+        while (pIn <= inEnd8Abs &&
                pBase <= baseEnd8Abs &&
                (*(uint64_t*)pIn ^ *(uint64_t*)pBase) == 0)
         {
-            pIn   += CMP_LENGTH_SHORT;
+            pIn += CMP_LENGTH_SHORT;
             pBase += CMP_LENGTH_SHORT;
         }
 
@@ -911,16 +991,16 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
             uint32_t advanced = static_cast<uint32_t>(pIn - (inBeg + offset));
             if (advanced != 0) {
                 emitCOPY(baseOffset, advanced);
-                offset     += advanced;
+                offset += advanced;
                 baseOffset += advanced;
             }
         }
 
         // If we ran out of room for more 128‑byte compares or one stream ended, stop.
-        if ((inBeg + offset)  > inEnd128Abs ||
+        if (UNLIKELY((inBeg + offset) > inEnd128Abs ||
             (baseBeg + baseOffset) > baseEnd128Abs ||
-            (inBeg + offset)  >= inEnd ||
-            (baseBeg + baseOffset) >= baseEnd) {
+            (inBeg + offset) >= inEnd ||
+            (baseBeg + baseOffset) >= baseEnd)) {
             break;
         }
 
@@ -935,6 +1015,7 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
                 loopBaseOffset += nextBaseChunkSize;
                 baseChunks.upsert(fingerprint, loopBaseOffset - 8);
                 --n;
+                _mm_prefetch((const char*)(bufBaseChunk + loopBaseOffset + 256), _MM_HINT_T0);
 
             }
         }
@@ -960,24 +1041,24 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
 
         if (matchedBaseOffset != baseOffset) {
             // ---- backtrace from the found match to extend backwards ----
-            const char* lowerIn   = inBeg   + offset;
+            const char* lowerIn = inBeg + offset;
             const char* lowerBase = baseBeg + baseOffset;
 
-            const char* qIn   = inBeg   + loopOffset;
+            const char* qIn = inBeg + loopOffset;
             const char* qBase = baseBeg + matchedBaseOffset;
 
             // step back by 8B chunks
-            while (qIn   >= lowerIn  + CMP_LENGTH_SHORT &&
+            while (qIn >= lowerIn + CMP_LENGTH_SHORT &&
                    qBase >= lowerBase + CMP_LENGTH_SHORT &&
                    (*(uint64_t*)qIn ^ *(uint64_t*)qBase) == 0)
             {
-                qIn   -= CMP_LENGTH_SHORT;
+                qIn -= CMP_LENGTH_SHORT;
                 qBase -= CMP_LENGTH_SHORT;
             }
             // step back byte‑by‑byte
             while (qIn > lowerIn && qBase > baseBeg) {
-                const char a = *(qIn  - 1);
-                const char b = *(qBase- 1);
+                const char a = *(qIn - 1);
+                const char b = *(qBase - 1);
                 if (a != b) break;
                 --qIn; --qBase;
             }
@@ -993,7 +1074,7 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
             }
 
             // advance canonical offsets to the forward match positions
-            offset     = loopOffset;
+            offset = loopOffset;
             baseOffset = matchedBaseOffset;
             continue; // next outer iteration
         }
@@ -1011,9 +1092,9 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
                 baseChunks.upsert(fingerprint, loopBaseOffset - 8);
                 --n;
 
-                #if defined(__x86_64__) || defined(_M_X64)
+#if defined(__x86_64__) || defined(_M_X64)
                 _mm_prefetch(reinterpret_cast<const char*>(bufBaseChunk + loopBaseOffset + 512), _MM_HINT_T0);
-                #endif
+#endif
             }
         }
 
@@ -1033,31 +1114,31 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
                 }
                 --n;
 
-                #if defined(__x86_64__) || defined(_M_X64)
+#if defined(__x86_64__) || defined(_M_X64)
                 _mm_prefetch(reinterpret_cast<const char*>(bufInputChunk + loopOffset + 512), _MM_HINT_T0);
-                #endif
+#endif
             }
 
-            const char* lowerIn   = inBeg   + offset;
+            const char* lowerIn = inBeg + offset;
             const char* lowerBase = baseBeg + baseOffset;
 
             if (matchedBaseOffset != baseOffset) {
                 // backtrace with larger steps first (128 then 8) to be symmetrical with big search
-                const char* qIn   = inBeg   + loopOffset;
+                const char* qIn = inBeg + loopOffset;
                 const char* qBase = baseBeg + matchedBaseOffset;
 
-                while (qIn   >= lowerIn  + CMP_LENGTH &&
+                while (qIn >= lowerIn + CMP_LENGTH &&
                        qBase >= lowerBase + CMP_LENGTH &&
                        memeq_128(qIn - CMP_LENGTH, qBase - CMP_LENGTH))
                 {
-                    qIn   -= CMP_LENGTH;
+                    qIn -= CMP_LENGTH;
                     qBase -= CMP_LENGTH;
                 }
-                while (qIn   >= lowerIn  + CMP_LENGTH_SHORT &&
+                while (qIn >= lowerIn + CMP_LENGTH_SHORT &&
                        qBase >= lowerBase + CMP_LENGTH_SHORT &&
                        (*(uint64_t*)qIn ^ *(uint64_t*)qBase) == 0)
                 {
-                    qIn   -= CMP_LENGTH_SHORT;
+                    qIn -= CMP_LENGTH_SHORT;
                     qBase -= CMP_LENGTH_SHORT;
                 }
 
@@ -1069,17 +1150,19 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
                              static_cast<size_t>((baseBeg + matchedBaseOffset) - qBase));
                 }
 
-                offset     = loopOffset;
+                offset = loopOffset;
                 baseOffset = matchedBaseOffset;
                 continue;
-            } else {
-                // still no match → emit ADD for what we advanced (if any), then advance both streams
+            }
+            else {
+             // still no match → emit ADD for what we advanced (if any), then advance both streams
                 if (loopOffset > offset) {
                     emitADD(inBeg + offset, static_cast<size_t>(loopOffset - offset));
-                    offset     = loopOffset;
+                    offset = loopOffset;
                     baseOffset = loopBaseOffset; // progress base along with what we indexed
-                } else {
-                    // ensure forward progress to avoid infinite loop
+                }
+                else {
+                 // ensure forward progress to avoid infinite loop
                     emitADD(inBeg + offset, 1);
                     ++offset;
                     ++baseOffset;
@@ -1090,7 +1173,7 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
     } // end for(;;)
 
     // Tail: emit remaining input
-    if (offset < inSize) {
+    if (LIKELY(offset < inSize)) {
         emitADD(inBeg + offset, static_cast<size_t>(inSize - offset));
     }
 
