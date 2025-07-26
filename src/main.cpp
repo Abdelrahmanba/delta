@@ -755,6 +755,8 @@ std::unordered_map<uint64_t, uint64_t> deltaChunks;  // map of delta chunks
 // // writeDeltaChunk();
 // }
 
+
+
 void deltaCompressGdelta(const fs::path& origPath, const fs::path& basePath) {
     readBaseChunk(basePath);
     readInputChunk(origPath);
@@ -773,198 +775,337 @@ void deltaCompressGdelta(const fs::path& origPath, const fs::path& basePath) {
     // writeDeltaChunk();
 }
 
+
+
+inline bool memeq_8(const void* a, const void* b) {
+    // memcpy is the safest unaligned load
+    uint64_t x, y;
+    std::memcpy(&x, a, 8);
+    std::memcpy(&y, b, 8);
+    return (x ^ y) == 0;
+}
+
+inline bool memeq_32(const void* a, const void* b) {
+#if defined(__AVX2__)
+    __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a));
+    __m256i vb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b));
+    __m256i x  = _mm256_xor_si256(va, vb);
+    return _mm256_testz_si256(x, x);
+#else
+    const uint64_t* pa = reinterpret_cast<const uint64_t*>(a);
+    const uint64_t* pb = reinterpret_cast<const uint64_t*>(b);
+    // Unaligned 64-bit loads are okay on x86; if you target other arches, keep memcpy
+    return ((pa[0]^pb[0]) | (pa[1]^pb[1]) | (pa[2]^pb[2]) | (pa[3]^pb[3])) == 0;
+#endif
+}
+
+inline bool memeq_64(const void* a, const void* b) {
+#if defined(__AVX2__)
+    const uint8_t* pa = static_cast<const uint8_t*>(a);
+    const uint8_t* pb = static_cast<const uint8_t*>(b);
+    return memeq_32(pa, pb) && memeq_32(pa + 32, pb + 32);
+#else
+    const uint64_t* pa = reinterpret_cast<const uint64_t*>(a);
+    const uint64_t* pb = reinterpret_cast<const uint64_t*>(b);
+    return ((pa[0]^pb[0]) | (pa[1]^pb[1]) | (pa[2]^pb[2]) | (pa[3]^pb[3]) |
+            (pa[4]^pb[4]) | (pa[5]^pb[5]) | (pa[6]^pb[6]) | (pa[7]^pb[7])) == 0;
+#endif
+}
+
+inline bool memeq_128(const void* a, const void* b) {
+#if defined(__AVX512F__)
+    __m512i va0 = _mm512_loadu_si512(a);
+    __m512i vb0 = _mm512_loadu_si512(b);
+    __mmask64 k = _mm512_cmpeq_epi8_mask(va0, vb0);
+    return k == ~__mmask64(0); // all bytes equal
+#elif defined(__AVX2__)
+    const uint8_t* pa = static_cast<const uint8_t*>(a);
+    const uint8_t* pb = static_cast<const uint8_t*>(b);
+    __m256i a0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pa +  0));
+    __m256i b0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pb +  0));
+    __m256i a1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pa + 32));
+    __m256i b1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pb + 32));
+    __m256i a2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pa + 64));
+    __m256i b2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pb + 64));
+    __m256i a3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pa + 96));
+    __m256i b3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(pb + 96));
+
+    __m256i x0 = _mm256_xor_si256(a0, b0);
+    __m256i x1 = _mm256_xor_si256(a1, b1);
+    __m256i x2 = _mm256_xor_si256(a2, b2);
+    __m256i x3 = _mm256_xor_si256(a3, b3);
+
+    __m256i o01 = _mm256_or_si256(x0, x1);
+    __m256i o23 = _mm256_or_si256(x2, x3);
+    __m256i o   = _mm256_or_si256(o01, o23);
+    return _mm256_testz_si256(o, o);
+#else
+    // Scalar fallback
+    return memeq_64(a, b) && memeq_64(static_cast<const uint8_t*>(a)+64,
+                                      static_cast<const uint8_t*>(b)+64);
+#endif
+}
+
+
 alignas(64) TinyMapSIMD baseChunks;
 void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
     readBaseChunk(basePath);
     readInputChunk(origPath);
 
+    constexpr size_t CMP_LENGTH        = 128;
+    constexpr size_t CMP_LENGTH_SHORT  = 8;
+
+    const char* const in   = bufInputChunk;
+    const char* const base = bufBaseChunk;
+
+    const size_t inSize   = sizeInputChunk;
+    const size_t baseSize = sizeBaseChunk;
+
+    const char* const inBeg   = in;
+    const char* const baseBeg = base;
+    const char* const inEnd   = in   + inSize;
+    const char* const baseEnd = base + baseSize;
+
+    // absolute last positions where an N‑byte compare is still valid
+    const char* const inEnd128Abs   = (inSize   >= CMP_LENGTH)       ? inEnd   - CMP_LENGTH       : inBeg;
+    const char* const baseEnd128Abs = (baseSize >= CMP_LENGTH)       ? baseEnd - CMP_LENGTH       : baseBeg;
+    const char* const inEnd8Abs     = (inSize   >= CMP_LENGTH_SHORT) ? inEnd   - CMP_LENGTH_SHORT : inBeg;
+    const char* const baseEnd8Abs   = (baseSize >= CMP_LENGTH_SHORT) ? baseEnd - CMP_LENGTH_SHORT : baseBeg;
+
     auto start = std::chrono::high_resolution_clock::now();
 
-    size_t offset = 0;
+    size_t offset     = 0; // canonical positions
     size_t baseOffset = 0;
-    size_t size = sizeInputChunk > sizeBaseChunk ? sizeBaseChunk : sizeInputChunk;
-    constexpr size_t CMP_LENGTH = 128;
-    constexpr size_t CMP_LENGTH_SHORT = 8;
-    
-    const uint8_t* in = bufInputChunk;
-    const uint8_t* base = bufBaseChunk;
-    const uint8_t* inEnd = in + sizeInputChunk;
-    const uint8_t* baseEnd = base + sizeBaseChunk;
-    const uint8_t* inCmpEnd = in + size;           // min(sizeInputChunk,sizeBaseChunk)
-    const uint8_t* baseCmpEnd = base + size;
 
-    const uint8_t* pIn = in + offset;
-    const uint8_t* pBase = base + baseOffset;
-
-    while (offset + CMP_LENGTH < size) {
-        size_t loopOffset = offset;  // save the original offset for later use
-        size_t loopBaseOffset = baseOffset;  // save the original base offset
-
-        while (memcmp(bufInputChunk + loopOffset, bufBaseChunk + loopBaseOffset, CMP_LENGTH) == 0
-            && loopOffset + CMP_LENGTH < sizeInputChunk
-            && loopBaseOffset + CMP_LENGTH < sizeBaseChunk) {
-            loopOffset += CMP_LENGTH;
-            loopBaseOffset += CMP_LENGTH;
+    // main loop
+    for (;;) {
+        // Stop if either stream cannot sustain another 128‑byte probe.
+        if ((inBeg + offset)  > inEnd128Abs ||
+            (baseBeg + baseOffset) > baseEnd128Abs) {
+            break;
         }
-        while (memcmp(bufInputChunk + loopOffset, bufBaseChunk + loopBaseOffset, CMP_LENGTH_SHORT) == 0
-                && loopOffset + CMP_LENGTH_SHORT < sizeInputChunk
-                && loopBaseOffset + CMP_LENGTH_SHORT < sizeBaseChunk) {
-            loopOffset += CMP_LENGTH_SHORT;
-            loopBaseOffset += CMP_LENGTH_SHORT;
-        }
-        if (offset != loopOffset) {
-            emitCOPY(baseOffset, loopOffset - offset);
-        }
-        offset = loopOffset;          // update offset to the new position
-        baseOffset = loopBaseOffset;  // update baseOffset to the new position
 
+        // ---- forward match with fixed sizes (128 then 8) ----
+        const char* pIn   = inBeg   + offset;
+        const char* pBase = baseBeg + baseOffset;
 
-        if (baseOffset + CMP_LENGTH >= sizeBaseChunk || offset + CMP_LENGTH >= sizeInputChunk) {
-            // std::cout << "Base chunk stream ended.\n";
-            break;  // no more base chunks to match against
+        while (pIn   <= inEnd128Abs   &&
+               pBase <= baseEnd128Abs &&
+            //    std::memcmp(pIn, pBase, CMP_LENGTH) == 0)
+               (memeq_128(pIn, pBase))
+            )
+        {
+            pIn   += CMP_LENGTH;
+            pBase += CMP_LENGTH;
         }
-        size_t numberOfchunks = NUMBER_OF_CHUNKS;
-        baseChunks.clear();  // clear the base chunks map
-        while (loopBaseOffset < sizeBaseChunk && numberOfchunks > 0) {
-            size_t nextBaseChunkSize = nextChunk(bufBaseChunk, loopBaseOffset, sizeBaseChunk);
-            loopBaseOffset += nextBaseChunkSize;
-            baseChunks.upsert(fingerprint, loopBaseOffset - 8);
-            numberOfchunks--;
+        while (pIn   <= inEnd8Abs   &&
+               pBase <= baseEnd8Abs &&
+               (*(uint64_t*)pIn ^ *(uint64_t*)pBase) == 0)
+        {
+            pIn   += CMP_LENGTH_SHORT;
+            pBase += CMP_LENGTH_SHORT;
         }
-        numberOfchunks = NUMBER_OF_CHUNKS;
 
-        // init the matchedOffset
-        size_t matchedBaseOffset = baseOffset;
-        while (loopOffset < sizeInputChunk && numberOfchunks > 0) {
-            size_t nextInputChunkSize = nextChunk(bufInputChunk, loopOffset, sizeInputChunk);
-            loopOffset += nextInputChunkSize;
-            // query base index for a match
-            if (baseChunks.find(fingerprint, matchedBaseOffset)) {
-                loopOffset -= 8;  // to the start of the match
-                // stick with the first match TODO: verify that its a good matching point
-                break;
+        // if we advanced, emit COPY for the matched run
+        {
+            size_t advanced = static_cast<size_t>(pIn - (inBeg + offset));
+            if (advanced != 0) {
+                emitCOPY(baseOffset, advanced);
+                offset     += advanced;
+                baseOffset += advanced;
             }
-            numberOfchunks--;
         }
-        // a match is found. back trace then update offsets.
-        size_t currOff = loopOffset;
-        size_t currBaseOffset = matchedBaseOffset;
-        if (matchedBaseOffset != baseOffset) {
-            // pointers to the matched offsets
-            while (memcmp(bufInputChunk + loopOffset, bufBaseChunk + matchedBaseOffset, CMP_LENGTH_SHORT) == 0
-                && loopOffset >= (offset + CMP_LENGTH_SHORT)
-                && matchedBaseOffset >= (baseOffset + CMP_LENGTH_SHORT)) {
-                loopOffset -= CMP_LENGTH_SHORT;  // backtrace by 8 bytes
-                matchedBaseOffset -= CMP_LENGTH_SHORT;
-            }
-            while (memcmp(bufInputChunk + loopOffset, bufBaseChunk + matchedBaseOffset, 1) == 0
-                && loopOffset >= (offset + 1)
-                && matchedBaseOffset >= 1) {
-                loopOffset -= 1;  // backtrace by 1 byte
-                matchedBaseOffset -= 1;
-            }
 
-// either we are back at offset (if no inserations happend in input chunk) or we found a mismatch:
-// 1. emit add from offset to loopOffset
-// 2. emit copy from to loopOffset to offset
-
-// insertation happened
-            if (loopOffset > offset) {
-                emitADD(bufInputChunk + offset, loopOffset - offset);
-            }
-
-            if (matchedBaseOffset != currBaseOffset) {
-                emitCOPY(matchedBaseOffset, currBaseOffset - matchedBaseOffset);
-            }
-            if (currOff != loopOffset) {
-                offset = currOff;
-            }
-            // prepare offset and baseOffset for next iteration
-            baseOffset = currBaseOffset;
+        // If we ran out of room for more 128‑byte compares or one stream ended, stop.
+        if ((inBeg + offset)  > inEnd128Abs ||
+            (baseBeg + baseOffset) > baseEnd128Abs ||
+            (inBeg + offset)  >= inEnd ||
+            (baseBeg + baseOffset) >= baseEnd) {
+            break;
         }
-        // if no match was found, we just emit ADD. This is what i will optimize now
-        else {
-            // try with more chunks
 
-            numberOfchunks = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER - NUMBER_OF_CHUNKS;
-            while (loopBaseOffset < sizeBaseChunk && numberOfchunks > 0) {
-                size_t nextBaseChunkSize =
-                    nextChunkBig(bufBaseChunk, loopBaseOffset, sizeBaseChunk);
+        // ---- build tiny index over next base chunks (NUMBER_OF_CHUNKS == 16) ----
+        size_t loopBaseOffset = baseOffset;
+        baseChunks.clear();
+
+        {
+            size_t n = NUMBER_OF_CHUNKS;
+            while (loopBaseOffset < baseSize && n > 0) {
+                size_t nextBaseChunkSize = nextChunk(bufBaseChunk, loopBaseOffset, baseSize);
                 loopBaseOffset += nextBaseChunkSize;
                 baseChunks.upsert(fingerprint, loopBaseOffset - 8);
-                numberOfchunks--;
+                --n;
+
+                // prefetch upcoming bytes (optional)
+                #if defined(__x86_64__) || defined(_M_X64)
+                _mm_prefetch(reinterpret_cast<const char*>(bufBaseChunk + loopBaseOffset + 256), _MM_HINT_T0);
+                #endif
             }
-            // this means the base chunk stream has ended. TODO: Don't bother with
-            // the rest. emit Add and return.
-            if (numberOfchunks != 0) {
-            }
-            numberOfchunks = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER;  // reset for input chunk
-            loopOffset = offset;  // reset loopOffset
-            // init the matchedOffset
-            size_t matchedBaseOffset = baseOffset;
-            while (loopOffset < sizeInputChunk && numberOfchunks > 0) {
-                size_t nextInputChunkSize = nextChunkBig(bufInputChunk, loopOffset, sizeInputChunk);
+        }
+
+        // ---- probe input chunks against the tiny index ----
+        size_t loopOffset = offset;
+        size_t matchedBaseOffset = baseOffset;
+        {
+            size_t n = NUMBER_OF_CHUNKS;
+            while (loopOffset < inSize && n > 0) {
+                size_t nextInputChunkSize = nextChunk(bufInputChunk, loopOffset, inSize);
                 loopOffset += nextInputChunkSize;
-// query base index for a match
+
                 if (baseChunks.find(fingerprint, matchedBaseOffset)) {
-                    loopOffset -= 8;  // to the start of the match
-                    // stick with the first match TODO: verify that its a good matching point
+                    // align to start of match
+                    loopOffset -= 8;
                     break;
                 }
-                numberOfchunks--;
+                --n;
+
+                #if defined(__x86_64__) || defined(_M_X64)
+                _mm_prefetch(reinterpret_cast<const char*>(bufInputChunk + loopOffset + 256), _MM_HINT_T0);
+                #endif
+            }
+        }
+
+        if (matchedBaseOffset != baseOffset) {
+            // ---- backtrace from the found match to extend backwards ----
+            const char* lowerIn   = inBeg   + offset;
+            const char* lowerBase = baseBeg + baseOffset;
+
+            const char* qIn   = inBeg   + loopOffset;
+            const char* qBase = baseBeg + matchedBaseOffset;
+
+            // step back by 8B chunks
+            while (qIn   >= lowerIn  + CMP_LENGTH_SHORT &&
+                   qBase >= lowerBase + CMP_LENGTH_SHORT &&
+                   (*(uint64_t*)qIn ^ *(uint64_t*)qBase) == 0)
+            {
+                qIn   -= CMP_LENGTH_SHORT;
+                qBase -= CMP_LENGTH_SHORT;
+            }
+            // step back byte‑by‑byte
+            while (qIn > lowerIn && qBase > baseBeg) {
+                const char a = *(qIn  - 1);
+                const char b = *(qBase- 1);
+                if (a != b) break;
+                --qIn; --qBase;
             }
 
-            size_t currOff = loopOffset;
-            size_t currBaseOffset = matchedBaseOffset;
+            // emit ADD for the insertion gap, if any
+            if (qIn > lowerIn) {
+                emitADD(lowerIn, static_cast<size_t>(qIn - lowerIn));
+            }
+            // emit COPY for the matched backward extension
+            if (qBase != (baseBeg + matchedBaseOffset)) {
+                emitCOPY(static_cast<size_t>(qBase - baseBeg),
+                         static_cast<size_t>((baseBeg + matchedBaseOffset) - qBase));
+            }
 
-            // [SECOND] if we found a match, we need to backtrace to the
+            // advance canonical offsets to the forward match positions
+            offset     = loopOffset;
+            baseOffset = matchedBaseOffset;
+            continue; // next outer iteration
+        }
+
+        // -----------------------------
+        // No match found in tiny index: try big‑chunk search, then fallback to ADD.
+        // -----------------------------
+
+        // more base chunks
+        {
+            size_t n = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER - NUMBER_OF_CHUNKS;
+            while (loopBaseOffset < baseSize && n > 0) {
+                size_t nextBaseChunkSize = nextChunkBig(bufBaseChunk, loopBaseOffset, baseSize);
+                loopBaseOffset += nextBaseChunkSize;
+                baseChunks.upsert(fingerprint, loopBaseOffset - 8);
+                --n;
+
+                #if defined(__x86_64__) || defined(_M_X64)
+                _mm_prefetch(reinterpret_cast<const char*>(bufBaseChunk + loopBaseOffset + 512), _MM_HINT_T0);
+                #endif
+            }
+        }
+
+        // re‑probe input with big chunks
+        {
+            size_t n = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER;
+            loopOffset = offset;                 // reset
+            matchedBaseOffset = baseOffset;      // reset
+
+            while (loopOffset < inSize && n > 0) {
+                size_t nextInputChunkSize = nextChunkBig(bufInputChunk, loopOffset, inSize);
+                loopOffset += nextInputChunkSize;
+
+                if (baseChunks.find(fingerprint, matchedBaseOffset)) {
+                    loopOffset -= 8;
+                    break;
+                }
+                --n;
+
+                #if defined(__x86_64__) || defined(_M_X64)
+                _mm_prefetch(reinterpret_cast<const char*>(bufInputChunk + loopOffset + 512), _MM_HINT_T0);
+                #endif
+            }
+
+            const char* lowerIn   = inBeg   + offset;
+            const char* lowerBase = baseBeg + baseOffset;
+
             if (matchedBaseOffset != baseOffset) {
-                while (memcmp(bufInputChunk + loopOffset, bufBaseChunk + matchedBaseOffset, CMP_LENGTH) == 0
-                    && loopOffset >= (offset + CMP_LENGTH)
-                    && matchedBaseOffset >= (baseOffset + CMP_LENGTH)) {
-                    loopOffset -= CMP_LENGTH;  // backtrace by CMP_LENGTH bytes
-                    matchedBaseOffset -= CMP_LENGTH;
+                // backtrace with larger steps first (128 then 8) to be symmetrical with big search
+                const char* qIn   = inBeg   + loopOffset;
+                const char* qBase = baseBeg + matchedBaseOffset;
+
+                while (qIn   >= lowerIn  + CMP_LENGTH &&
+                       qBase >= lowerBase + CMP_LENGTH &&
+                       memeq_128(qIn - CMP_LENGTH, qBase - CMP_LENGTH))
+                {
+                    qIn   -= CMP_LENGTH;
+                    qBase -= CMP_LENGTH;
                 }
-                while (memcmp(bufInputChunk + loopOffset, bufBaseChunk + matchedBaseOffset, 8) == 0
-                    && loopOffset >= (offset + 8)
-                    && matchedBaseOffset >= (baseOffset + 8)) {
-                    loopOffset -= 8;  // backtrace by 8 bytes
-                    matchedBaseOffset -= 8;
-                }
-                // either we are back at offset (if no inserations happend in input chunk) or we found a mismatch:
-                // 1. emit add from offset to loopOffset
-                // 2. emit copy from to loopOffset to offset
-                if (loopOffset > offset) {
-                    emitADD(bufInputChunk + offset, loopOffset - offset);
-                }
-                if (matchedBaseOffset != currBaseOffset) {
-                    emitCOPY(matchedBaseOffset, currBaseOffset - matchedBaseOffset);
+                while (qIn   >= lowerIn  + CMP_LENGTH_SHORT &&
+                       qBase >= lowerBase + CMP_LENGTH_SHORT &&
+                       (*(uint64_t*)qIn ^ *(uint64_t*)qBase) == 0)
+                {
+                    qIn   -= CMP_LENGTH_SHORT;
+                    qBase -= CMP_LENGTH_SHORT;
                 }
 
-                if (currOff != loopOffset) {
-                    offset = currOff;
+                if (qIn > lowerIn) {
+                    emitADD(lowerIn, static_cast<size_t>(qIn - lowerIn));
                 }
-                baseOffset = currBaseOffset;
-            }
-            else {
-                if (loopOffset > offset) {
-                    emitADD(bufInputChunk + offset, loopOffset - offset);
-                    offset = loopOffset;  // advance offset to the new position
-                    baseOffset = loopBaseOffset;  // advance base offset to the new position
+                if (qBase != (baseBeg + matchedBaseOffset)) {
+                    emitCOPY(static_cast<size_t>(qBase - baseBeg),
+                             static_cast<size_t>((baseBeg + matchedBaseOffset) - qBase));
                 }
-            }
-        } //ended else 
-    } // end while loop
 
-    if (offset < sizeInputChunk) {
-        emitADD(bufInputChunk + offset, sizeInputChunk - offset);
+                offset     = loopOffset;
+                baseOffset = matchedBaseOffset;
+                continue;
+            } else {
+                // still no match → emit ADD for what we advanced (if any), then advance both streams
+                if (loopOffset > offset) {
+                    emitADD(inBeg + offset, static_cast<size_t>(loopOffset - offset));
+                    offset     = loopOffset;
+                    baseOffset = loopBaseOffset; // progress base along with what we indexed
+                } else {
+                    // ensure forward progress to avoid infinite loop
+                    emitADD(inBeg + offset, 1);
+                    ++offset;
+                    ++baseOffset;
+                }
+                continue;
+            }
+        }
+    } // end for(;;)
+
+    // Tail: emit remaining input
+    if (offset < inSize) {
+        emitADD(inBeg + offset, static_cast<size_t>(inSize - offset));
     }
-    auto end = std::chrono::high_resolution_clock::now();
-    duration +=
-        std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
-        .count();
-}
 
+    auto end = std::chrono::high_resolution_clock::now();
+    duration += std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+        // writeDeltaChunk();
+
+}
 
 
 void deltaCompressEDelta(const fs::path& origPath, const fs::path& basePath) {
