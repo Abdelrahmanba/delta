@@ -26,9 +26,7 @@
 #define hash_length 48
 // #define DEBUG
 // #define VORBSE
-#define NUMBER_OF_CHUNKS 4
-#define CHUNKS_MULTIPLIER 4
-constexpr size_t MaxChunks = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER;
+
 
 
 namespace fs = std::filesystem;
@@ -157,18 +155,22 @@ constexpr uint64_t GEARTABLE[256] = {
     0x63c7a906c1dd187b,
 };
 
+
+#define NUMBER_OF_CHUNKS 4
+#define CHUNKS_MULTIPLIER 4
+constexpr size_t MaxChunks = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER;
+
 inline size_t nextChunk(char* readBuffer, size_t buffBegin, size_t buffEnd)
 {
-    uint64_t i = 9;
+    uint64_t i = 1;
     size_t size = buffEnd - buffBegin;
     fingerprint = 0;
-    if (size > 2048)
-        size = 2048;
+    if (size > 1024)
+        size = 1024;
 
 
     while (i + 1 < size) {
         fingerprint = (fingerprint << 1) + GEARTABLE[readBuffer[buffBegin + i]];  // simple hash
-        // fingerprint = (fingerprint << 2) + GEAR[readBuffer[buffBegin + i]] + GEAR[readBuffer[buffBegin + i +1]];
         if (!(fingerprint & 0x000018035100)) {
             return i;
         }
@@ -179,16 +181,14 @@ inline size_t nextChunk(char* readBuffer, size_t buffBegin, size_t buffEnd)
 
 inline size_t nextChunkBig(char* readBuffer, size_t buffBegin, size_t buffEnd)
 {
-    uint64_t i = 9;
+    uint64_t i = 1;
     size_t size = buffEnd - buffBegin;
     fingerprint = 0;
-    if (size > 2048)
-        size = 2048;
-
+    if (size > 4096)
+        size = 4096;
 
     while (i + 1 < size) {
         fingerprint = (fingerprint << 1) + GEARTABLE[readBuffer[buffBegin + i]];  // simple hash
-        // fingerprint = (fingerprint << 2) + GEAR[readBuffer[buffBegin + i]] + GEAR[readBuffer[buffBegin + i +1]];
         if (!(fingerprint & 0x00001800035300)) {
             return i;
         }
@@ -773,15 +773,10 @@ void deltaCompressGdelta(const fs::path& origPath, const fs::path& basePath) {
     // writeDeltaChunk();
 }
 
-
-
 alignas(64) TinyMapSIMD baseChunks;
-
 void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
     readBaseChunk(basePath);
     readInputChunk(origPath);
-    __builtin_prefetch(deltaPtr, 1, 3);  // prefetch the delta buffer
-
 
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -790,12 +785,20 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
     size_t size = sizeInputChunk > sizeBaseChunk ? sizeBaseChunk : sizeInputChunk;
     constexpr size_t CMP_LENGTH = 128;
     constexpr size_t CMP_LENGTH_SHORT = 8;
+    
+    const uint8_t* in = bufInputChunk;
+    const uint8_t* base = bufBaseChunk;
+    const uint8_t* inEnd = in + sizeInputChunk;
+    const uint8_t* baseEnd = base + sizeBaseChunk;
+    const uint8_t* inCmpEnd = in + size;           // min(sizeInputChunk,sizeBaseChunk)
+    const uint8_t* baseCmpEnd = base + size;
+
+    const uint8_t* pIn = in + offset;
+    const uint8_t* pBase = base + baseOffset;
 
     while (offset + CMP_LENGTH < size) {
         size_t loopOffset = offset;  // save the original offset for later use
         size_t loopBaseOffset = baseOffset;  // save the original base offset
-        uint64_t baseValue = *(reinterpret_cast<uint64_t*>(bufBaseChunk + baseOffset));
-        uint64_t inputValue = *(reinterpret_cast<uint64_t*>(bufInputChunk + offset));
 
         while (memcmp(bufInputChunk + loopOffset, bufBaseChunk + loopBaseOffset, CMP_LENGTH) == 0
             && loopOffset + CMP_LENGTH < sizeInputChunk
@@ -815,9 +818,7 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
         offset = loopOffset;          // update offset to the new position
         baseOffset = loopBaseOffset;  // update baseOffset to the new position
 
-        // Region of change. We try to find a data anchor
 
-        // // before that let's make sure the base buffer is not exhausted
         if (baseOffset + CMP_LENGTH >= sizeBaseChunk || offset + CMP_LENGTH >= sizeInputChunk) {
             // std::cout << "Base chunk stream ended.\n";
             break;  // no more base chunks to match against
@@ -830,11 +831,6 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
             baseChunks.upsert(fingerprint, loopBaseOffset - 8);
             numberOfchunks--;
         }
-        // this means the base chunk stream has ended. TODO: Don't bother with
-        // the rest. emit Add and return.
-        // if (numberOfchunks != 0) {
-        //     std::cout << "Base chunk stream ended before reaching all chunks.\n";
-        // }
         numberOfchunks = NUMBER_OF_CHUNKS;
 
         // init the matchedOffset
@@ -855,37 +851,17 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
         size_t currBaseOffset = matchedBaseOffset;
         if (matchedBaseOffset != baseOffset) {
             // pointers to the matched offsets
-            baseValue = *(reinterpret_cast<uint64_t*>(bufBaseChunk + matchedBaseOffset));
-            inputValue = *(reinterpret_cast<uint64_t*>(bufInputChunk + loopOffset));
-            while (inputValue == baseValue && loopOffset >= (offset + 8) &&
-                matchedBaseOffset >= 8) {
-                loopOffset -= 8;  // backtrace by 8 bytes
-                matchedBaseOffset -= 8;
-                inputValue = *(reinterpret_cast<uint64_t*>(bufInputChunk + loopOffset));
-                baseValue = *(reinterpret_cast<uint64_t*>(bufBaseChunk + matchedBaseOffset));
+            while (memcmp(bufInputChunk + loopOffset, bufBaseChunk + matchedBaseOffset, CMP_LENGTH_SHORT) == 0
+                && loopOffset >= (offset + CMP_LENGTH_SHORT)
+                && matchedBaseOffset >= (baseOffset + CMP_LENGTH_SHORT)) {
+                loopOffset -= CMP_LENGTH_SHORT;  // backtrace by 8 bytes
+                matchedBaseOffset -= CMP_LENGTH_SHORT;
             }
-            if (matchedBaseOffset != currBaseOffset) {
-                loopOffset += 8;             // advance offset by 8 bytes
-                matchedBaseOffset += 8;  // advance base offset by 8 bytes
-            }
-            // finer grain backtrace
-            uint8_t inputValue_8 =
-                *(reinterpret_cast<uint8_t*>(bufInputChunk + loopOffset));
-            uint8_t baseValue_8 =
-                *(reinterpret_cast<uint8_t*>(bufBaseChunk + matchedBaseOffset));
-            size_t beforeLoopOffset = loopOffset;
-            while (inputValue_8 == baseValue_8 && matchedBaseOffset > 0) {
-                if (loopOffset == offset) {
-                    break;  // we are back at the current offset
-                }
+            while (memcmp(bufInputChunk + loopOffset, bufBaseChunk + matchedBaseOffset, 1) == 0
+                && loopOffset >= (offset + 1)
+                && matchedBaseOffset >= 1) {
                 loopOffset -= 1;  // backtrace by 1 byte
                 matchedBaseOffset -= 1;
-                inputValue_8 = *(reinterpret_cast<uint8_t*>(bufInputChunk + loopOffset));
-                baseValue_8 = *(reinterpret_cast<uint8_t*>(bufBaseChunk + matchedBaseOffset));
-            }
-            if (loopOffset != beforeLoopOffset) {
-                loopOffset += 1;             // advance offset by 1 byte
-                matchedBaseOffset += 1;  // advance base offset by 1 byte
             }
 
 // either we are back at offset (if no inserations happend in input chunk) or we found a mismatch:
@@ -943,65 +919,34 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
 
             // [SECOND] if we found a match, we need to backtrace to the
             if (matchedBaseOffset != baseOffset) {
-            // pointers to the matched offsets
-                baseValue = *(reinterpret_cast<uint64_t*>(bufBaseChunk + matchedBaseOffset));
-                inputValue = *(reinterpret_cast<uint64_t*>(bufInputChunk + loopOffset));
-                while (inputValue == baseValue && loopOffset >= (offset + 8) &&
-                matchedBaseOffset >= 8) {
+                while (memcmp(bufInputChunk + loopOffset, bufBaseChunk + matchedBaseOffset, CMP_LENGTH) == 0
+                    && loopOffset >= (offset + CMP_LENGTH)
+                    && matchedBaseOffset >= (baseOffset + CMP_LENGTH)) {
+                    loopOffset -= CMP_LENGTH;  // backtrace by CMP_LENGTH bytes
+                    matchedBaseOffset -= CMP_LENGTH;
+                }
+                while (memcmp(bufInputChunk + loopOffset, bufBaseChunk + matchedBaseOffset, 8) == 0
+                    && loopOffset >= (offset + 8)
+                    && matchedBaseOffset >= (baseOffset + 8)) {
                     loopOffset -= 8;  // backtrace by 8 bytes
                     matchedBaseOffset -= 8;
-                    inputValue = *(reinterpret_cast<uint64_t*>(bufInputChunk + loopOffset));
-                    baseValue = *(reinterpret_cast<uint64_t*>(bufBaseChunk + matchedBaseOffset));
                 }
-
-                if (matchedBaseOffset != currBaseOffset) {
-                    loopOffset += 8;             // advance offset by 8 bytes
-                    matchedBaseOffset += 8;  // advance base offset by 8 bytes
-                }
-                // finer grain backtrace
-                uint8_t inputValue_8 =
-                    *(reinterpret_cast<uint8_t*>(bufInputChunk + loopOffset));
-                uint8_t baseValue_8 =
-                    *(reinterpret_cast<uint8_t*>(bufBaseChunk + matchedBaseOffset));
-                size_t beforeLoopOffset = loopOffset;
-                while (inputValue_8 == baseValue_8 && matchedBaseOffset > 0) {
-                    if (loopOffset == offset) {
-                        break;  // we are back at the current offset
-                    }
-                    loopOffset -= 1;  // backtrace by 1 byte
-                    matchedBaseOffset -= 1;
-                    inputValue_8 = *(reinterpret_cast<uint8_t*>(bufInputChunk + loopOffset));
-                    baseValue_8 = *(reinterpret_cast<uint8_t*>(bufBaseChunk + matchedBaseOffset));
-                }
-                if (loopOffset != beforeLoopOffset) {
-                    loopOffset += 1;             // advance offset by 1 byte
-                    matchedBaseOffset += 1;  // advance base offset by 1 byte
-                }
-
                 // either we are back at offset (if no inserations happend in input chunk) or we found a mismatch:
                 // 1. emit add from offset to loopOffset
                 // 2. emit copy from to loopOffset to offset
-
-                // insertation happened
                 if (loopOffset > offset) {
                     emitADD(bufInputChunk + offset, loopOffset - offset);
                 }
                 if (matchedBaseOffset != currBaseOffset) {
                     emitCOPY(matchedBaseOffset, currBaseOffset - matchedBaseOffset);
                 }
-                    // emit COPY instruction
 
-                // prepare offset and baseOffset for next iteration
-                // std:: cout << "offset : " << offset << ", baseOffset: " << baseOffset
-                //     << ", currOff: " << currOff << ", currBaseOffset: " << currBaseOffset << " loopOffset: " << loopOffset
-                //     << ", loopBaseOffset: " << loopBaseOffset << '\n';
                 if (currOff != loopOffset) {
                     offset = currOff;
                 }
                 baseOffset = currBaseOffset;
             }
             else {
-               // [SECOND] no match was found
                 if (loopOffset > offset) {
                     emitADD(bufInputChunk + offset, loopOffset - offset);
                     offset = loopOffset;  // advance offset to the new position
@@ -1011,7 +956,6 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
         } //ended else 
     } // end while loop
 
-    // emit ADD at the end of the input chunk if any
     if (offset < sizeInputChunk) {
         emitADD(bufInputChunk + offset, sizeInputChunk - offset);
     }
