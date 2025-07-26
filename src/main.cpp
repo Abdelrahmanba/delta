@@ -220,7 +220,7 @@ struct TinyMapSIMD {
 
     TinyMapSIMD() { clear(); }
 
-    inline bool find(uint64_t key, size_t& out) const {
+    inline bool find(uint64_t key, uint32_t& out) const {
 #if defined(__AVX2__)
         const __m256i k = _mm256_set1_epi64x((long long)key);
         // block 0: indices 0..3
@@ -254,8 +254,8 @@ struct TinyMapSIMD {
     }
 
     // insert or update
-    inline void upsert(uint64_t key, size_t value) {
-        size_t v;
+    inline void upsert(uint64_t key, uint32_t value) {
+        uint32_t v;
         if (find(key, v)) {
             // update existing
             // re-find index cheaply (small count; linear)
@@ -852,14 +852,14 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
     readBaseChunk(basePath);
     readInputChunk(origPath);
 
-    constexpr size_t CMP_LENGTH        = 128;
-    constexpr size_t CMP_LENGTH_SHORT  = 8;
+    constexpr uint32_t CMP_LENGTH        = 128;
+    constexpr uint32_t CMP_LENGTH_SHORT  = 8;
 
     const char* const in   = bufInputChunk;
     const char* const base = bufBaseChunk;
 
-    const size_t inSize   = sizeInputChunk;
-    const size_t baseSize = sizeBaseChunk;
+    const uint32_t inSize   = sizeInputChunk;
+    const uint32_t baseSize = sizeBaseChunk;
 
     const char* const inBeg   = in;
     const char* const baseBeg = base;
@@ -874,8 +874,8 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    size_t offset     = 0; // canonical positions
-    size_t baseOffset = 0;
+    uint32_t offset     = 0; // canonical positions
+    uint32_t baseOffset = 0;
 
     // main loop
     for (;;) {
@@ -908,7 +908,7 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
 
         // if we advanced, emit COPY for the matched run
         {
-            size_t advanced = static_cast<size_t>(pIn - (inBeg + offset));
+            uint32_t advanced = static_cast<uint32_t>(pIn - (inBeg + offset));
             if (advanced != 0) {
                 emitCOPY(baseOffset, advanced);
                 offset     += advanced;
@@ -925,31 +925,27 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
         }
 
         // ---- build tiny index over next base chunks (NUMBER_OF_CHUNKS == 16) ----
-        size_t loopBaseOffset = baseOffset;
+        uint32_t loopBaseOffset = baseOffset;
         baseChunks.clear();
 
         {
-            size_t n = NUMBER_OF_CHUNKS;
+            uint32_t n = NUMBER_OF_CHUNKS;
             while (loopBaseOffset < baseSize && n > 0) {
-                size_t nextBaseChunkSize = nextChunk(bufBaseChunk, loopBaseOffset, baseSize);
+                uint32_t nextBaseChunkSize = nextChunk(bufBaseChunk, loopBaseOffset, baseSize);
                 loopBaseOffset += nextBaseChunkSize;
                 baseChunks.upsert(fingerprint, loopBaseOffset - 8);
                 --n;
 
-                // prefetch upcoming bytes (optional)
-                #if defined(__x86_64__) || defined(_M_X64)
-                _mm_prefetch(reinterpret_cast<const char*>(bufBaseChunk + loopBaseOffset + 256), _MM_HINT_T0);
-                #endif
             }
         }
 
         // ---- probe input chunks against the tiny index ----
-        size_t loopOffset = offset;
-        size_t matchedBaseOffset = baseOffset;
+        uint32_t loopOffset = offset;
+        uint32_t matchedBaseOffset = baseOffset;
         {
-            size_t n = NUMBER_OF_CHUNKS;
+            uint32_t n = NUMBER_OF_CHUNKS;
             while (loopOffset < inSize && n > 0) {
-                size_t nextInputChunkSize = nextChunk(bufInputChunk, loopOffset, inSize);
+                uint32_t nextInputChunkSize = nextChunk(bufInputChunk, loopOffset, inSize);
                 loopOffset += nextInputChunkSize;
 
                 if (baseChunks.find(fingerprint, matchedBaseOffset)) {
@@ -959,9 +955,6 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
                 }
                 --n;
 
-                #if defined(__x86_64__) || defined(_M_X64)
-                _mm_prefetch(reinterpret_cast<const char*>(bufInputChunk + loopOffset + 256), _MM_HINT_T0);
-                #endif
             }
         }
 
@@ -1011,9 +1004,9 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
 
         // more base chunks
         {
-            size_t n = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER - NUMBER_OF_CHUNKS;
+            uint32_t n = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER - NUMBER_OF_CHUNKS;
             while (loopBaseOffset < baseSize && n > 0) {
-                size_t nextBaseChunkSize = nextChunkBig(bufBaseChunk, loopBaseOffset, baseSize);
+                uint32_t nextBaseChunkSize = nextChunkBig(bufBaseChunk, loopBaseOffset, baseSize);
                 loopBaseOffset += nextBaseChunkSize;
                 baseChunks.upsert(fingerprint, loopBaseOffset - 8);
                 --n;
@@ -1026,12 +1019,12 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
 
         // re‑probe input with big chunks
         {
-            size_t n = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER;
+            uint32_t n = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER;
             loopOffset = offset;                 // reset
             matchedBaseOffset = baseOffset;      // reset
 
             while (loopOffset < inSize && n > 0) {
-                size_t nextInputChunkSize = nextChunkBig(bufInputChunk, loopOffset, inSize);
+                uint32_t nextInputChunkSize = nextChunkBig(bufInputChunk, loopOffset, inSize);
                 loopOffset += nextInputChunkSize;
 
                 if (baseChunks.find(fingerprint, matchedBaseOffset)) {
