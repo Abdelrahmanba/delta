@@ -98,13 +98,16 @@ uint64_t GEARTABLE[256] = {
     0x63c7a906c1dd187b,
 };
 Chunker::Chunker() {
-    minChunkSize = 32;
-    maxChunkSize = 2048;
-    avgChunkSize = 1024;
-    window_size = 128;  // Default window size
+    minChunkSize = 1;
+    maxChunkSize = 1024;
+    window_size = 32;  // Default window size
+    largeWindow = 128;  // Default large window size
 #ifdef __SSE3__
     uint64_t num_vectors = window_size / SSE_REGISTER_SIZE_BYTES;
+    uint64_t num_vectors2 = largeWindow / SSE_REGISTER_SIZE_BYTES;
     sse_array = new __m128i[num_vectors]();
+    sse_array2 = new __m128i[num_vectors2]();
+
 #endif
 }
 
@@ -231,14 +234,14 @@ size_t Chunker::nextChunkBig(char *readBuffer, size_t buffBegin, size_t buffEnd)
     i++;
     if (size > maxChunkSize)
         size = maxChunkSize;
-    else if (size < window_size)
+    else if (size < largeWindow)
         return size;
 #ifdef __SSE3__
     // If SIMD enabled, accelerate find_maximum() and slide depending on
     // SIMD mode
-    max_value = find_maximum_sse128(readBuffer + buffBegin, 0, window_size,
-    sse_array);
-    return range_scan_geq_sse128(readBuffer + buffBegin, window_size, size,
+    max_value = find_maximum_sse128(readBuffer + buffBegin, 0, largeWindow,
+    sse_array2);
+    return range_scan_geq_sse128(readBuffer + buffBegin, largeWindow, size,
                                  max_value);
 #endif
 
@@ -341,3 +344,5 @@ size_t Chunker::nextChunkBig(char *readBuffer, size_t buffBegin, size_t buffEnd)
 
 //     return size;
 // }
+
+// Chunker::~Chunker() {}

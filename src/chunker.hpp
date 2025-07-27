@@ -53,6 +53,7 @@ class Chunker {
                                    uint64_t end_position, uint8_t target_value);
     #ifdef __SSE3__
       __m128i *sse_array;
+        __m128i *sse_array2;
     #endif
    private:
     size_t minChunkSize;

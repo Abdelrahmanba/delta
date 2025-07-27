@@ -57,13 +57,13 @@ static fs::path DATA_DIR =
 // static fs::path DATA_DIR = "/mnt/data/delta/build/";
 
 static fs::path delta_map =
-"./delta_map_failing.csv";  // default delta map file
+// "./delta_map_test.csv";  // default delta map file
 // "/mydata/fdedup/test_data/delta_map.csv";  // default delta map file
 // "/mydata/fdedup/test_data/vm_vn_delta_map.csv";  // default delta map file
 // "/mydata/fdedup/test_data/odess_docker_delta_map.csv";  // default delta map file
 // "./odess_docker_delta_map.csv";  // default delta map file
 // "/mnt/data/test_data/odess_gnu_delta_map.csv";  // default delta map file
-// "./delta_map_full.csv";  // default delta map file
+"./delta_map_full.csv";  // default delta map file
 // "/mydata/fdedup/test_data/odess_debian_delta_map.csv";  // default delta map file
 // "/mydata/fdedup/test_data/odess_vm_delta_map.csv";  // default delta map file
 
@@ -1223,7 +1223,7 @@ void deltaCompressEDelta(const fs::path& origPath, const fs::path& basePath) {
     duration +=
         std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
         .count();
-    writeDeltaChunk();
+    // writeDeltaChunk();
 }
 int main(int argc, char* argv[]) try {
 
