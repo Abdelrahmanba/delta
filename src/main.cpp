@@ -51,8 +51,8 @@ static fs::path DATA_DIR =
 // "/mnt/data/test_data/odess_docker_storage";  // default data directory
 // "/mnt/data/test_data/odess_debian_storage";  // default data directory
 // "/mnt/data/test_data/odess_vm_storage";  // default data directory
-// "/mnt/data/test_data/odess_gnu_storage";  // default data directory
-"/mnt/data/test_data/linux_storage";  // default data directory
+"/mnt/data/test_data/odess_gnu_storage";  // default data directory
+// "/mnt/data/test_data/linux_storage";  // default data directory
 
 // static fs::path DATA_DIR = "/mnt/data/delta/build/";
 
@@ -61,9 +61,9 @@ static fs::path delta_map =
 // "/mydata/fdedup/test_data/delta_map.csv";  // default delta map file
 // "/mydata/fdedup/test_data/vm_vn_delta_map.csv";  // default delta map file
 // "/mydata/fdedup/test_data/odess_docker_delta_map.csv";  // default delta map file
-// "./odess_docker_delta_map.csv";  // default delta map file
-// "/mnt/data/test_data/odess_gnu_delta_map.csv";  // default delta map file
-"./delta_map_full.csv";  // default delta map file
+// "/mydata/fdedup/test_data/odess_docker_delta_map.csv";  // default delta map file
+"/mnt/data/test_data/odess_gnu_delta_map.csv";  // default delta map file
+// "./delta_map_full.csv";  // default delta map file
 // "/mydata/fdedup/test_data/odess_debian_delta_map.csv";  // default delta map file
 // "/mydata/fdedup/test_data/odess_vm_delta_map.csv";  // default delta map file
 
@@ -174,7 +174,7 @@ constexpr uint64_t GEARTABLE[256] = {
 
 
 #define NUMBER_OF_CHUNKS 4
-#define CHUNKS_MULTIPLIER 4
+#define CHUNKS_MULTIPLIER 8
 constexpr size_t MaxChunks = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER;
 
 inline size_t nextChunk(char* readBuffer, size_t buffBegin, size_t buffEnd)
@@ -325,46 +325,66 @@ void inline readInputChunk(const fs::path& p) {
 #endif
 }
 // ---------- minimal vcdiff helpers -------------------------------
-inline __attribute__((always_inline, hot)) void writeVarint(uint32_t v)  // <-- no return value
-{
-    while (v >= 0x80) {
-        *deltaPtr++ = char((v & 0x7F) | 0x80);  // continuation-bit = 1
-        v >>= 7;
-    }
-    *deltaPtr++ = char(v);  // final byte, cont-bit = 0
+enum : uint8_t {
+    T_ADD     = 0u << 6,  // 00
+    T_COPY_V  = 1u << 6,  // 01
+    T_COPY_A8 = 2u << 6,  // 10
+    T_COPY_A16= 3u << 6,  // 11
+    INLINE_LEN_MAX = 63
+};
+
+static inline __attribute__((always_inline, hot))
+void writeVarint(uint32_t v) {
+    while (v >= 0x80) { *deltaPtr++ = uint8_t((v & 0x7Fu) | 0x80u); v >>= 7; }
+    *deltaPtr++ = uint8_t(v);
 }
 
-inline __attribute__((always_inline, hot)) void emitADD(const char* data, size_t len) {
-    *deltaPtr++ = 0x00;                       // ADD, size follows
-    writeVarint(static_cast<uint32_t>(len));  // updates deltaPtr inside
+static inline __attribute__((always_inline, hot))
+void writeLenHeader(uint8_t type, uint32_t len) {
+    if (len < INLINE_LEN_MAX) {
+        *deltaPtr++ = uint8_t(type | len);
+    } else {
+        *deltaPtr++ = uint8_t(type | INLINE_LEN_MAX);
+        writeVarint(len - INLINE_LEN_MAX);
+    }
+}
+
+inline __attribute__((always_inline, hot))
+void emitADD(const char* data, size_t len) {
+    const uint32_t n = static_cast<uint32_t>(len);
+    writeLenHeader(T_ADD, n);
     std::memcpy(deltaPtr, data, len);
-    deltaPtr += len;  // advance cursor
-
-    // Print emitted bytes as chars
+    deltaPtr += len;
 #ifdef DEBUG
-    std::cout << "Emitted ADD of size: " << len << " with data: ";
-    std::cout << "ADD instruction bytes: ";
-    for (size_t i = 0; i < len; i++) {
-        char c = data[i];
-        if (isprint(c)) {
-            std::cout << c;
-        }
-        else {
-            std::cout << '.';
-        }
-    }
-    std::cout << std::endl;
+    std::cout << "ADD len=" << len << '\n';
 #endif
 }
 
-inline __attribute__((always_inline, hot)) void emitCOPY(size_t addr, size_t len) {
+inline __attribute__((always_inline, hot))
+void emitCOPY(size_t addr, size_t len) {
+    const uint32_t nlen  = static_cast<uint32_t>(len);
+    const uint32_t naddr = static_cast<uint32_t>(addr);
+
+    uint8_t type;
+    if (naddr <= 0xFFu)       type = T_COPY_A8;
+    else if (naddr <= 0xFFFF) type = T_COPY_A16;
+    else                      type = T_COPY_V;
+
+    writeLenHeader(type, nlen);
+
+    if (type == T_COPY_A8) {
+        *deltaPtr++ = uint8_t(naddr);
+    } else if (type == T_COPY_A16) {
+        *deltaPtr++ = uint8_t(naddr & 0xFFu);
+        *deltaPtr++ = uint8_t((naddr >> 8) & 0xFFu);
+    } else { // T_COPY_V
+        writeVarint(naddr);
+    }
+
 #ifdef DEBUG
-    std::cout << "Emitting COPY of size: " << len
-        << " from address: " << addr << '\n';
+    std::cout << "COPY len=" << len << " addr=" << addr << " mode="
+              << ((type==T_COPY_A8)?"A8":(type==T_COPY_A16)?"A16":"V") << '\n';
 #endif
-    * deltaPtr++ = 0x25;  // COPY (var-size, mode 0)
-    writeVarint(static_cast<uint32_t>(len));
-    writeVarint(static_cast<uint32_t>(addr));  // dictionary offset
 }
 // -----------------------------------------------------------------
 struct chunk {
@@ -902,12 +922,21 @@ struct alignas(64) TinyMapSIMD {
         const __m256i a1 = _mm256_loadu_si256((const __m256i*) & fp[4]);   // 4..7
         const __m256i a2 = _mm256_loadu_si256((const __m256i*) & fp[8]);   // 8..11
         const __m256i a3 = _mm256_loadu_si256((const __m256i*) & fp[12]);  // 12..15
+        const __m256i a4 = _mm256_loadu_si256((const __m256i*) & fp[16]);  // 16..19
+        const __m256i a5 = _mm256_loadu_si256((const __m256i*) & fp[20]);  // 20..23
+        const __m256i a6 = _mm256_loadu_si256((const __m256i*) & fp[24]);  // 24..27
+        const __m256i a7 = _mm256_loadu_si256((const __m256i*) & fp[28]);  // 28..31
+
 
 
         const __m256i m0 = _mm256_cmpeq_epi64(a0, key);
         const __m256i m1 = _mm256_cmpeq_epi64(a1, key);
         const __m256i m2 = _mm256_cmpeq_epi64(a2, key);
         const __m256i m3 = _mm256_cmpeq_epi64(a3, key);
+        const __m256i m4 = _mm256_cmpeq_epi64(a4, key);
+        const __m256i m5 = _mm256_cmpeq_epi64(a5, key);
+        const __m256i m6 = _mm256_cmpeq_epi64(a6, key);
+        const __m256i m7 = _mm256_cmpeq_epi64(a7, key);
 
         // Convert masks to per-lane hits:
         // movemask gives 32 bits; every equal 64-bit lane sets 8 bits to 1.
@@ -915,11 +944,15 @@ struct alignas(64) TinyMapSIMD {
         uint32_t mm1 = (uint32_t)_mm256_movemask_epi8(m1);
         uint32_t mm2 = (uint32_t)_mm256_movemask_epi8(m2);
         uint32_t mm3 = (uint32_t)_mm256_movemask_epi8(m3);
+        uint32_t mm4 = (uint32_t)_mm256_movemask_epi8(m4);
+        uint32_t mm5 = (uint32_t)_mm256_movemask_epi8(m5);
+        uint32_t mm6 = (uint32_t)_mm256_movemask_epi8(m6);
+        uint32_t mm7 = (uint32_t)_mm256_movemask_epi8(m7);
 
         // Helper to scan first hit within a 4-lane group
         auto first_lane = [](uint32_t mm)->int {
             // Each 64-bit lane corresponds to 8 mask bits.
-            for (int lane = 0; lane < 4; ++lane) {
+            for (int lane = 0; lane < 8; ++lane) {
                 if (mm & (0xFFu << (lane * 8))) return lane;
             }
             return -1;
@@ -931,6 +964,10 @@ struct alignas(64) TinyMapSIMD {
         else if (mm1) { grp = 1; lane = first_lane(mm1); }
         else if (mm2) { grp = 2; lane = first_lane(mm2); }
         else if (mm3) { grp = 3; lane = first_lane(mm3); }
+        else if (mm4) { grp = 4; lane = first_lane(mm4); }
+        else if (mm5) { grp = 5; lane = first_lane(mm5); }
+        else if (mm6) { grp = 6; lane = first_lane(mm6); }
+        else if (mm7) { grp = 7; lane = first_lane(mm7); }
 
         if (lane >= 0) {
             uint32_t idx = (uint32_t)(grp * 4 + lane);
@@ -1108,7 +1145,7 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
         {
             uint32_t n = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER - NUMBER_OF_CHUNKS;
             while (loopBaseOffset < baseSize && n > 0) {
-                uint32_t nextBaseChunkSize = chunker->nextChunkBig(bufBaseChunk, loopBaseOffset, baseSize);
+                uint32_t nextBaseChunkSize = chunker->nextChunk(bufBaseChunk, loopBaseOffset, baseSize, true);
                 loopBaseOffset += nextBaseChunkSize;
                 Hash64 fp = XXH3_64bits(bufBaseChunk + loopBaseOffset - 32, 32);
                 baseChunks.upsert(fp, loopBaseOffset - 8);
@@ -1127,7 +1164,7 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
             matchedBaseOffset = baseOffset;      // reset
 
             while (loopOffset < inSize && n > 0) {
-                uint32_t nextInputChunkSize = chunker->nextChunkBig(bufInputChunk, loopOffset, inSize);
+                uint32_t nextInputChunkSize = chunker->nextChunk(bufInputChunk, loopOffset, inSize, true);
                 loopOffset += nextInputChunkSize;
                 uint64_t fp = XXH3_64bits(bufInputChunk + loopOffset - 32, 32);
 
