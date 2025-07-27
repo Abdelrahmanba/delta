@@ -6,7 +6,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include "chunker.hpp"
 #define XXH_INLINE_ALL
 #include <string.h>
 

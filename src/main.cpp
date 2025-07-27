@@ -27,13 +27,13 @@
 // #define VORBSE
 
 #if defined(__GNUC__) || defined(__clang__)
-  #define LIKELY(x)   (__builtin_expect(!!(x), 1))
-  #define UNLIKELY(x) (__builtin_expect(!!(x), 0))
+#define LIKELY(x)   (__builtin_expect(!!(x), 1))
+#define UNLIKELY(x) (__builtin_expect(!!(x), 0))
 #else
-  #define LIKELY(x)   (x)
-  #define UNLIKELY(x) (x)
+#define LIKELY(x)   (x)
+#define UNLIKELY(x) (x)
 #endif
-
+#include "chunker.hpp"
 namespace fs = std::filesystem;
 
 double duration = 0.0;  // global duration for performance measurement
@@ -45,16 +45,29 @@ size_t gDeltaSize = 0;
 // ─────────────────────────────────────── Config
 // ──────────────────────────────────────
 static fs::path DATA_DIR =
-"/mydata/storage";  // default data directory
+// "/mydata/storage";  // default data directory
+// "/mnt/data/test_data/storage";  // default data directory
+// "/mnt/data/test_data/vm_fin_Storage";  // default data directory
+// "/mnt/data/test_data/odess_docker_storage";  // default data directory
+// "/mnt/data/test_data/odess_debian_storage";  // default data directory
+// "/mnt/data/test_data/odess_vm_storage";  // default data directory
+// "/mnt/data/test_data/odess_gnu_storage";  // default data directory
+"/mnt/data/test_data/linux_storage";  // default data directory
 
-// "/mydata/fdedup/test_data/storage";  // default data directory
 // static fs::path DATA_DIR = "/mnt/data/delta/build/";
 
 static fs::path delta_map =
 "./delta_map_failing.csv";  // default delta map file
 // "/mydata/fdedup/test_data/delta_map.csv";  // default delta map file
+// "/mydata/fdedup/test_data/vm_vn_delta_map.csv";  // default delta map file
+// "/mydata/fdedup/test_data/odess_docker_delta_map.csv";  // default delta map file
+// "./odess_docker_delta_map.csv";  // default delta map file
+// "/mnt/data/test_data/odess_gnu_delta_map.csv";  // default delta map file
+// "./delta_map_full.csv";  // default delta map file
+// "/mydata/fdedup/test_data/odess_debian_delta_map.csv";  // default delta map file
+// "/mydata/fdedup/test_data/odess_vm_delta_map.csv";  // default delta map file
 
-
+auto chunker = new Chunker();  // global chunker instance
 
 using Hash64 = std::uint64_t;
 
@@ -166,7 +179,7 @@ constexpr size_t MaxChunks = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER;
 
 inline size_t nextChunk(char* readBuffer, size_t buffBegin, size_t buffEnd)
 {
-    uint64_t i = 1;
+    uint64_t i = 9;
     size_t size = buffEnd - buffBegin;
     fingerprint = 0;
     if (size > 1024)
@@ -178,14 +191,14 @@ inline size_t nextChunk(char* readBuffer, size_t buffBegin, size_t buffEnd)
         if (!(fingerprint & 0x000018035100)) {
             return i;
         }
-        i += 1;
+        i += 4;
     }
     return size;
 }
 
 inline size_t nextChunkBig(char* readBuffer, size_t buffBegin, size_t buffEnd)
 {
-    uint64_t i = 1;
+    uint64_t i = 9;
     size_t size = buffEnd - buffBegin;
     fingerprint = 0;
     if (size > 4096)
@@ -196,7 +209,7 @@ inline size_t nextChunkBig(char* readBuffer, size_t buffBegin, size_t buffEnd)
         if (!(fingerprint & 0x00001800035300)) {
             return i;
         }
-        i += 1;
+        i += 4;
     }
     return size;
 }
@@ -345,7 +358,11 @@ inline __attribute__((always_inline, hot)) void emitADD(const char* data, size_t
 }
 
 inline __attribute__((always_inline, hot)) void emitCOPY(size_t addr, size_t len) {
-    *deltaPtr++ = 0x25;  // COPY (var-size, mode 0)
+#ifdef DEBUG
+    std::cout << "Emitting COPY of size: " << len
+        << " from address: " << addr << '\n';
+#endif
+    * deltaPtr++ = 0x25;  // COPY (var-size, mode 0)
     writeVarint(static_cast<uint32_t>(len));
     writeVarint(static_cast<uint32_t>(addr));  // dictionary offset
 }
@@ -852,7 +869,7 @@ inline bool memeq_128(const void* a, const void* b) {
 
 
 struct alignas(64) TinyMapSIMD {
-    static constexpr uint32_t kCap = 16;
+    static constexpr uint32_t kCap = 32;
 
     uint64_t fp[kCap];   // fingerprints
     uint32_t off[kCap];  // offsets
@@ -885,6 +902,7 @@ struct alignas(64) TinyMapSIMD {
         const __m256i a1 = _mm256_loadu_si256((const __m256i*) & fp[4]);   // 4..7
         const __m256i a2 = _mm256_loadu_si256((const __m256i*) & fp[8]);   // 8..11
         const __m256i a3 = _mm256_loadu_si256((const __m256i*) & fp[12]);  // 12..15
+
 
         const __m256i m0 = _mm256_cmpeq_epi64(a0, key);
         const __m256i m1 = _mm256_cmpeq_epi64(a1, key);
@@ -1011,9 +1029,10 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
         {
             uint32_t n = NUMBER_OF_CHUNKS;
             while (loopBaseOffset < baseSize && n > 0) {
-                uint32_t nextBaseChunkSize = nextChunk(bufBaseChunk, loopBaseOffset, baseSize);
+                uint32_t nextBaseChunkSize = chunker->nextChunk(bufBaseChunk, loopBaseOffset, baseSize);
                 loopBaseOffset += nextBaseChunkSize;
-                baseChunks.upsert(fingerprint, loopBaseOffset - 8);
+                Hash64 fp = XXH3_64bits(bufBaseChunk + loopBaseOffset - 32, 32);
+                baseChunks.upsert(fp, loopBaseOffset - 8);
                 --n;
                 _mm_prefetch((const char*)(bufBaseChunk + loopBaseOffset + 256), _MM_HINT_T0);
 
@@ -1026,10 +1045,12 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
         {
             uint32_t n = NUMBER_OF_CHUNKS;
             while (loopOffset < inSize && n > 0) {
-                uint32_t nextInputChunkSize = nextChunk(bufInputChunk, loopOffset, inSize);
+                uint32_t nextInputChunkSize = chunker->nextChunk(bufInputChunk, loopOffset, inSize);
                 loopOffset += nextInputChunkSize;
+                uint64_t fp = XXH3_64bits(bufInputChunk + loopOffset - 32, 32);
 
-                if (baseChunks.find(fingerprint, matchedBaseOffset)) {
+
+                if (baseChunks.find(fp, matchedBaseOffset)) {
                     // align to start of match
                     loopOffset -= 8;
                     break;
@@ -1087,9 +1108,10 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
         {
             uint32_t n = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER - NUMBER_OF_CHUNKS;
             while (loopBaseOffset < baseSize && n > 0) {
-                uint32_t nextBaseChunkSize = nextChunkBig(bufBaseChunk, loopBaseOffset, baseSize);
+                uint32_t nextBaseChunkSize = chunker->nextChunkBig(bufBaseChunk, loopBaseOffset, baseSize);
                 loopBaseOffset += nextBaseChunkSize;
-                baseChunks.upsert(fingerprint, loopBaseOffset - 8);
+                Hash64 fp = XXH3_64bits(bufBaseChunk + loopBaseOffset - 32, 32);
+                baseChunks.upsert(fp, loopBaseOffset - 8);
                 --n;
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -1105,10 +1127,11 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
             matchedBaseOffset = baseOffset;      // reset
 
             while (loopOffset < inSize && n > 0) {
-                uint32_t nextInputChunkSize = nextChunkBig(bufInputChunk, loopOffset, inSize);
+                uint32_t nextInputChunkSize = chunker->nextChunkBig(bufInputChunk, loopOffset, inSize);
                 loopOffset += nextInputChunkSize;
+                uint64_t fp = XXH3_64bits(bufInputChunk + loopOffset - 32, 32);
 
-                if (baseChunks.find(fingerprint, matchedBaseOffset)) {
+                if (baseChunks.find(fp, matchedBaseOffset)) {
                     loopOffset -= 8;
                     break;
                 }
@@ -1180,6 +1203,7 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
     auto end = std::chrono::high_resolution_clock::now();
     duration += std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
         // writeDeltaChunk();
+    // writeDeltaChunk();
 
 }
 
@@ -1243,11 +1267,11 @@ int main(int argc, char* argv[]) try {
         const std::string& delta_id = fields[0];
         const fs::path origPath = DATA_DIR / fields[1];
         const fs::path basePath = DATA_DIR / fields[2];
-#ifdef VORBSE
-        std::cout << "Processing delta ID: " << delta_id
-            << ", Original: " << origPath << ", Base: " << basePath
-            << '\n';
-#endif
+// #ifdef VORBSE
+//         std::cout << "Processing delta ID: " << delta_id
+//             << ", Original: " << origPath << ", Base: " << basePath
+//             << '\n';
+// #endif
         // deltaPtr = bufDeltaChunk;  // reset delta pointer
         // deltaCompressGdelta(origPath, basePath);
         // size_t gsize = (deltaPtr - bufDeltaChunk);  // size of the generated delta
@@ -1261,7 +1285,7 @@ int main(int argc, char* argv[]) try {
         totalDeltaSize += (deltaPtr - bufDeltaChunk);
 
         // std::cout << "sizeBaseChunk: " << sizeBaseChunk
-            // << ", sizeInputChunk: " << sizeInputChunk << " sizeDeltaChunk: " << (deltaPtr - bufDeltaChunk) << '\n';
+        //     << ", sizeInputChunk: " << sizeInputChunk << " sizeDeltaChunk: " << (deltaPtr - bufDeltaChunk) << '\n';
         // std::cout << "gdelta size: " << gsize << ", new delta size: " << (deltaPtr - bufDeltaChunk)
         //     << " bytes for chunk: " << fields[1] << '\n';
 #ifdef VORBSE
@@ -1274,7 +1298,7 @@ int main(int argc, char* argv[]) try {
 // }
 // else {
 //     std::cerr << "Decoded output does NOT match the input chunk!\n";
-//     return 1;
+//     // return 1;
 // }
 
 // std::cout << "delta size: " << (deltaPtr - bufDeltaChunk)
@@ -1286,6 +1310,7 @@ int main(int argc, char* argv[]) try {
     std::cout << " Throughput: " << throughput << " MB/s" << std::endl;
 
     std::cout << "Done. Results in " << outCsv << '\n';
+    delete chunker;
     return 0;
 }
 catch (const std::exception& e) {
