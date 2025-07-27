@@ -22,7 +22,7 @@
 
 #include "xxhash.h"
 
-#define hash_length 48
+#define hash_length 24
 // #define DEBUG
 // #define VORBSE
 
@@ -48,10 +48,10 @@ static fs::path DATA_DIR =
 // "/mydata/storage";  // default data directory
 // "/mnt/data/test_data/storage";  // default data directory
 // "/mnt/data/test_data/vm_fin_Storage";  // default data directory
-// "/mnt/data/test_data/odess_docker_storage";  // default data directory
+"/mnt/data/test_data/odess_docker_storage";  // default data directory
 // "/mnt/data/test_data/odess_debian_storage";  // default data directory
 // "/mnt/data/test_data/odess_vm_storage";  // default data directory
-"/mnt/data/test_data/odess_gnu_storage";  // default data directory
+// "/mnt/data/test_data/odess_gnu_storage";  // default data directory
 // "/mnt/data/test_data/linux_storage";  // default data directory
 
 // static fs::path DATA_DIR = "/mnt/data/delta/build/";
@@ -60,9 +60,9 @@ static fs::path delta_map =
 // "./delta_map_test.csv";  // default delta map file
 // "/mydata/fdedup/test_data/delta_map.csv";  // default delta map file
 // "/mydata/fdedup/test_data/vm_vn_delta_map.csv";  // default delta map file
+"/mydata/fdedup/test_data/odess_docker_delta_map.csv";  // default delta map file
 // "/mydata/fdedup/test_data/odess_docker_delta_map.csv";  // default delta map file
-// "/mydata/fdedup/test_data/odess_docker_delta_map.csv";  // default delta map file
-"/mnt/data/test_data/odess_gnu_delta_map.csv";  // default delta map file
+// "/mnt/data/test_data/odess_gnu_delta_map.csv";  // default delta map file
 // "./delta_map_full.csv";  // default delta map file
 // "/mydata/fdedup/test_data/odess_debian_delta_map.csv";  // default delta map file
 // "/mydata/fdedup/test_data/odess_vm_delta_map.csv";  // default delta map file
@@ -174,7 +174,7 @@ constexpr uint64_t GEARTABLE[256] = {
 
 
 #define NUMBER_OF_CHUNKS 4
-#define CHUNKS_MULTIPLIER 8
+#define CHUNKS_MULTIPLIER 6
 constexpr size_t MaxChunks = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER;
 
 inline size_t nextChunk(char* readBuffer, size_t buffBegin, size_t buffEnd)
@@ -924,8 +924,6 @@ struct alignas(64) TinyMapSIMD {
         const __m256i a3 = _mm256_loadu_si256((const __m256i*) & fp[12]);  // 12..15
         const __m256i a4 = _mm256_loadu_si256((const __m256i*) & fp[16]);  // 16..19
         const __m256i a5 = _mm256_loadu_si256((const __m256i*) & fp[20]);  // 20..23
-        const __m256i a6 = _mm256_loadu_si256((const __m256i*) & fp[24]);  // 24..27
-        const __m256i a7 = _mm256_loadu_si256((const __m256i*) & fp[28]);  // 28..31
 
 
 
@@ -935,8 +933,6 @@ struct alignas(64) TinyMapSIMD {
         const __m256i m3 = _mm256_cmpeq_epi64(a3, key);
         const __m256i m4 = _mm256_cmpeq_epi64(a4, key);
         const __m256i m5 = _mm256_cmpeq_epi64(a5, key);
-        const __m256i m6 = _mm256_cmpeq_epi64(a6, key);
-        const __m256i m7 = _mm256_cmpeq_epi64(a7, key);
 
         // Convert masks to per-lane hits:
         // movemask gives 32 bits; every equal 64-bit lane sets 8 bits to 1.
@@ -946,13 +942,11 @@ struct alignas(64) TinyMapSIMD {
         uint32_t mm3 = (uint32_t)_mm256_movemask_epi8(m3);
         uint32_t mm4 = (uint32_t)_mm256_movemask_epi8(m4);
         uint32_t mm5 = (uint32_t)_mm256_movemask_epi8(m5);
-        uint32_t mm6 = (uint32_t)_mm256_movemask_epi8(m6);
-        uint32_t mm7 = (uint32_t)_mm256_movemask_epi8(m7);
 
         // Helper to scan first hit within a 4-lane group
         auto first_lane = [](uint32_t mm)->int {
             // Each 64-bit lane corresponds to 8 mask bits.
-            for (int lane = 0; lane < 8; ++lane) {
+            for (int lane = 0; lane < 6; ++lane) {
                 if (mm & (0xFFu << (lane * 8))) return lane;
             }
             return -1;
@@ -966,8 +960,6 @@ struct alignas(64) TinyMapSIMD {
         else if (mm3) { grp = 3; lane = first_lane(mm3); }
         else if (mm4) { grp = 4; lane = first_lane(mm4); }
         else if (mm5) { grp = 5; lane = first_lane(mm5); }
-        else if (mm6) { grp = 6; lane = first_lane(mm6); }
-        else if (mm7) { grp = 7; lane = first_lane(mm7); }
 
         if (lane >= 0) {
             uint32_t idx = (uint32_t)(grp * 4 + lane);
@@ -1068,7 +1060,7 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
             while (loopBaseOffset < baseSize && n > 0) {
                 uint32_t nextBaseChunkSize = chunker->nextChunk(bufBaseChunk, loopBaseOffset, baseSize);
                 loopBaseOffset += nextBaseChunkSize;
-                Hash64 fp = XXH3_64bits(bufBaseChunk + loopBaseOffset - 32, 32);
+                Hash64 fp = XXH3_64bits(bufBaseChunk + loopBaseOffset - hash_length, hash_length);
                 baseChunks.upsert(fp, loopBaseOffset - 8);
                 --n;
                 _mm_prefetch((const char*)(bufBaseChunk + loopBaseOffset + 256), _MM_HINT_T0);
@@ -1084,7 +1076,7 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
             while (loopOffset < inSize && n > 0) {
                 uint32_t nextInputChunkSize = chunker->nextChunk(bufInputChunk, loopOffset, inSize);
                 loopOffset += nextInputChunkSize;
-                uint64_t fp = XXH3_64bits(bufInputChunk + loopOffset - 32, 32);
+                uint64_t fp = XXH3_64bits(bufInputChunk + loopOffset - hash_length, hash_length);
 
 
                 if (baseChunks.find(fp, matchedBaseOffset)) {
@@ -1145,9 +1137,9 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
         {
             uint32_t n = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER - NUMBER_OF_CHUNKS;
             while (loopBaseOffset < baseSize && n > 0) {
-                uint32_t nextBaseChunkSize = chunker->nextChunk(bufBaseChunk, loopBaseOffset, baseSize, true);
+                uint32_t nextBaseChunkSize = chunker->nextChunk(bufBaseChunk, loopBaseOffset, baseSize);
                 loopBaseOffset += nextBaseChunkSize;
-                Hash64 fp = XXH3_64bits(bufBaseChunk + loopBaseOffset - 32, 32);
+                Hash64 fp = XXH3_64bits(bufBaseChunk + loopBaseOffset - hash_length, hash_length);
                 baseChunks.upsert(fp, loopBaseOffset - 8);
                 --n;
 
@@ -1164,9 +1156,9 @@ void deltaCompress(const fs::path& origPath, const fs::path& basePath) {
             matchedBaseOffset = baseOffset;      // reset
 
             while (loopOffset < inSize && n > 0) {
-                uint32_t nextInputChunkSize = chunker->nextChunk(bufInputChunk, loopOffset, inSize, true);
+                uint32_t nextInputChunkSize = chunker->nextChunk(bufInputChunk, loopOffset, inSize);
                 loopOffset += nextInputChunkSize;
-                uint64_t fp = XXH3_64bits(bufInputChunk + loopOffset - 32, 32);
+                uint64_t fp = XXH3_64bits(bufInputChunk + loopOffset - hash_length, hash_length);
 
                 if (baseChunks.find(fp, matchedBaseOffset)) {
                     loopOffset -= 8;

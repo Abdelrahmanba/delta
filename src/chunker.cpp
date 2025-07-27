@@ -100,12 +100,10 @@ uint64_t GEARTABLE[256] = {
 Chunker::Chunker() {
     minChunkSize = 1;
     maxChunkSize = 512;
-    window_size = 16;  // Default window size
-    largeWindow = 64;  // Default large window size
+    window_size = 64;  // Default window size
 #ifdef __SSE3__
     uint64_t num_vectors = window_size / SSE_REGISTER_SIZE_BYTES;
-    uint64_t num_vectors2 = largeWindow / SSE_REGISTER_SIZE_BYTES;
-    sse_array = new __m128i[num_vectors2]();
+    sse_array = new __m128i[num_vectors]();
     // sse_array2 = new __m128i[num_vectors2]();
 
 #endif
@@ -204,23 +202,22 @@ uint64_t Chunker::range_scan_geq_sse128(char* buff, uint64_t start_position,
 }
 #endif
 
-size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd, bool big)
+size_t Chunker::nextChunk(char *readBuffer, size_t buffBegin, size_t buffEnd)
 {
     uint32_t i = 0;
     size_t size = buffEnd - buffBegin;
     char max_value = readBuffer[i + buffBegin];
-    uint32_t w = big ? largeWindow : this->window_size;
     i++;
     if (size > maxChunkSize)
         size = maxChunkSize;
-    else if (size < w)
+    else if (size < window_size)
         return size;
 #ifdef __SSE3__
     // If SIMD enabled, accelerate find_maximum() and slide depending on
     // SIMD mode
-    max_value = find_maximum_sse128(readBuffer + buffBegin, 0, w,
+    max_value = find_maximum_sse128(readBuffer + buffBegin, 0, window_size,
     sse_array);
-    return range_scan_geq_sse128(readBuffer + buffBegin, w, size,
+    return range_scan_geq_sse128(readBuffer + buffBegin, window_size, size,
                                  max_value);
 #endif
 
