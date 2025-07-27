@@ -100,7 +100,7 @@ uint64_t GEARTABLE[256] = {
 Chunker::Chunker() {
     minChunkSize = 1;
     maxChunkSize = 512;
-    window_size = 64;  // Default window size
+    window_size = 128;  // Default window size
 #ifdef __SSE3__
     uint64_t num_vectors = window_size / SSE_REGISTER_SIZE_BYTES;
     sse_array = new __m128i[num_vectors]();

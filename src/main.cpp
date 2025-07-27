@@ -48,11 +48,11 @@ static fs::path DATA_DIR =
 // "/mydata/storage";  // default data directory
 // "/mnt/data/test_data/storage";  // default data directory
 // "/mnt/data/test_data/vm_fin_Storage";  // default data directory
-"/mnt/data/test_data/odess_docker_storage";  // default data directory
+// "/mnt/data/test_data/odess_docker_storage";  // default data directory
 // "/mnt/data/test_data/odess_debian_storage";  // default data directory
 // "/mnt/data/test_data/odess_vm_storage";  // default data directory
 // "/mnt/data/test_data/odess_gnu_storage";  // default data directory
-// "/mnt/data/test_data/linux_storage";  // default data directory
+"/mnt/data/test_data/linux_storage";  // default data directory
 
 // static fs::path DATA_DIR = "/mnt/data/delta/build/";
 
@@ -60,10 +60,10 @@ static fs::path delta_map =
 // "./delta_map_test.csv";  // default delta map file
 // "/mydata/fdedup/test_data/delta_map.csv";  // default delta map file
 // "/mydata/fdedup/test_data/vm_vn_delta_map.csv";  // default delta map file
-"/mydata/fdedup/test_data/odess_docker_delta_map.csv";  // default delta map file
+// "/mydata/fdedup/test_data/odess_docker_delta_map.csv";  // default delta map file
 // "/mydata/fdedup/test_data/odess_docker_delta_map.csv";  // default delta map file
 // "/mnt/data/test_data/odess_gnu_delta_map.csv";  // default delta map file
-// "./delta_map_full.csv";  // default delta map file
+"./delta_map_full.csv";  // default delta map file
 // "/mydata/fdedup/test_data/odess_debian_delta_map.csv";  // default delta map file
 // "/mydata/fdedup/test_data/odess_vm_delta_map.csv";  // default delta map file
 
@@ -174,7 +174,7 @@ constexpr uint64_t GEARTABLE[256] = {
 
 
 #define NUMBER_OF_CHUNKS 4
-#define CHUNKS_MULTIPLIER 6
+#define CHUNKS_MULTIPLIER 5
 constexpr size_t MaxChunks = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER;
 
 inline size_t nextChunk(char* readBuffer, size_t buffBegin, size_t buffEnd)
