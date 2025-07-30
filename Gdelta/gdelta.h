@@ -1,14 +1,14 @@
-#pragma once
-
+#ifndef GDELTA_GDELTA_H
+#define GDELTA_GDELTA_H
 using namespace std;
 #include <iostream>
 #include <cstdint>
 
 /*****Parameter*****/
-#define ChunkSize (65 * 1024)
-#define INIT_BUFFER_SIZE (65 * 1024)
-// #define FPTYPE uint32_t
-#define FPTYPE uint32_t
+#define ChunkSize (1024 * 1024 * 20)
+#define INIT_BUFFER_SIZE (1024 * 1024 * 20)
+#define FPTYPE uint64_t
+//#define FPTYPE uint32_t
 #define WordSize 8
 #define SkipStep 2
 #define SkipOn
@@ -28,3 +28,4 @@ int gdecode(uint8_t *deltaBuf, uint32_t deltaSize, uint8_t *baseBuf,
 
 
 
+#endif // GDELTA_GDELTA_H

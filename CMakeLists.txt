@@ -29,7 +29,7 @@ include_directories(edelta/src)
 include_directories(edelta/util)
 
 add_executable(delta_compress src/main.cpp 
-                   src/chunker.cpp)
+                    src/lz4.c)
 
 
 
