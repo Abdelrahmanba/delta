@@ -5,6 +5,7 @@
 #include <iostream>
 
 #include <fstream>
+#include <cstring>
 
 #define MAX_CHUNK_SIZE (64 * 1024)  // 64MB 
 
@@ -28,6 +29,7 @@ public:
         std::cout << "DeltaEncoder initialized.\n";
     }
     virtual uint64_t encode() = 0;
+    virtual uint64_t decode(uint8_t* delta_buf, uint64_t delta_size) = 0;
     bool loadInput(const std::filesystem::path& filePath) {
         std::ifstream inFile(filePath, std::ios::binary | std::ios::ate);
         if (!inFile) {
@@ -52,6 +54,11 @@ public:
         inFile.read(reinterpret_cast<char*>(baseBuf), baseSize);
         inFile.close();
         return true;
+    }
+
+    bool verifyDecode(uint8_t* delta_buf, uint64_t delta_size) {
+        int status =  memcmp(outputBuf, inputBuf, inputSize);
+       return  (status == 0);
     }
 
 };

@@ -8,3 +8,10 @@ uint64_t GDeltaEncoder::encode() {
               << ", outputSize: " << outputSize << "\n";
     return outputSize;
 }
+
+uint64_t GDeltaEncoder::decode(uint8_t* delta_buf, uint64_t delta_size) {
+    size_t decoded_size = gdecode(delta_buf, static_cast<uint32_t>(delta_size), baseBuf,
+            static_cast<uint32_t>(baseSize), &outputBuf,
+            reinterpret_cast<uint32_t*>(&outputSize));
+    return decoded_size;
+}

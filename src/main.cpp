@@ -1,6 +1,3 @@
-#include "encoders/fdelta_encoder.h"
-#include "encoders/gdelta_encoder.h"
-
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -8,19 +5,28 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
+
+#include "decode.hpp"
+#include "encoders/fdelta_encoder.h"
+#include "encoders/gdelta_encoder.h"
 
 namespace fs = std::filesystem;
-
 
 uint64_t total_encoded_size = 0;
 uint64_t total_original_size = 0;
 double total_encoding_time = 0.0;
+uint64_t total_decoded_size = 0;
+double total_decoding_time = 0.0;
 
 struct Options {
     std::string dataset = "linux";
     std::string encoder_type = "fdelta";
     uint64_t total_chunks = 1000;
     fs::path path_prefix = "/data/";
+    fs::path delta_dir;
+    bool write_delta = false;
+    bool verify_decode = false;
 };
 
 static void printUsage(const char* program) {
@@ -28,13 +34,22 @@ static void printUsage(const char* program) {
         << "Usage: " << program << " [options]\n\n"
         << "Options:\n"
         << "  -d, --dataset <name>        Dataset name (default: linux)\n"
-        << "  -e, --encoder <type>        Encoder type: gdelta|fdelta (default: gdelta)\n"
-        << "  -c, --chunks <count>        Max chunks to process (default: 1000)\n"
+        << "  -e, --encoder <type>        Encoder type: gdelta|fdelta "
+           "(default: fdelta)\n"
+        << "  -c, --chunks <count>        Max chunks to process (default: "
+           "1000)\n"
         << "  -p, --path-prefix <path>    Dataset root path (default: /data/)\n"
+        << "  -D, --delta-dir <path>      Delta chunk directory (default: "
+           "<dataset>/chunks)\n"
+        << "  -w, --write-delta           Write delta chunks as "
+           "<input_hash>.delta\n"
+        << "  -v, --verify-decode         Decode-only: assert delta+base == "
+           "input\n"
         << "  -h, --help                  Show this help\n";
 }
 
-static bool parseArgs(int argc, char* argv[], Options* options, bool* show_help) {
+static bool parseArgs(int argc, char* argv[], Options* options,
+                      bool* show_help) {
     *show_help = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -66,6 +81,16 @@ static bool parseArgs(int argc, char* argv[], Options* options, bool* show_help)
                 return false;
             }
             options->path_prefix = argv[++i];
+        } else if (arg == "-D" || arg == "--delta-dir") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for " << arg << "\n";
+                return false;
+            }
+            options->delta_dir = argv[++i];
+        } else if (arg == "-w" || arg == "--write-delta") {
+            options->write_delta = true;
+        } else if (arg == "-v" || arg == "--verify-decode") {
+            options->verify_decode = true;
         } else {
             std::cerr << "Unknown argument: " << arg << "\n";
             printUsage(argv[0]);
@@ -75,7 +100,7 @@ static bool parseArgs(int argc, char* argv[], Options* options, bool* show_help)
     return true;
 }
 
-int main(int argc, char* argv[]){
+int main(int argc, char* argv[]) {
     Options options;
     bool show_help = false;
     if (!parseArgs(argc, argv, &options, &show_help)) {
@@ -86,7 +111,10 @@ int main(int argc, char* argv[]){
     }
 
     auto data_path = options.path_prefix / options.dataset / "chunks";
-    auto map_path = options.path_prefix / options.dataset / "meta/delta_map.csv";
+    auto map_path =
+        options.path_prefix / options.dataset / "meta/delta_map.csv";
+    fs::path delta_dir =
+        options.delta_dir.empty() ? data_path : options.delta_dir;
 
     DeltaEncoder* encoder = nullptr;
 
@@ -96,6 +124,12 @@ int main(int argc, char* argv[]){
         encoder = new GDeltaEncoder();
     } else {
         std::cerr << "Unknown encoder type: " << options.encoder_type << "\n";
+        return 1;
+    }
+
+    if (options.verify_decode && options.write_delta) {
+        std::cerr
+            << "Choose either --verify-decode or --write-delta, not both\n";
         return 1;
     }
 
@@ -116,58 +150,145 @@ int main(int argc, char* argv[]){
         double estimated_similarity;
         std::cout << "Processing line: " << line << "\n";
 
-
         std::getline(ss, delta_id, ',');
         std::getline(ss, original_hash, ',');
         std::getline(ss, base_hash, ',');
-        ss >> base_size; ss.ignore(1);
-        ss >> original_size; ss.ignore(1);
-        ss >> delta_size; ss.ignore(1);
-        ss >> base_level; ss.ignore(1);
+        ss >> base_size;
+        ss.ignore(1);
+        ss >> original_size;
+        ss.ignore(1);
+        ss >> delta_size;
+        ss.ignore(1);
+        ss >> base_level;
+        ss.ignore(1);
         ss >> estimated_similarity;
         fs::path base_path = data_path / (base_hash);
         fs::path original_path = data_path / (original_hash);
-        std::cout << "Processing Delta ID: " << delta_id << " Base: " << base_path << " Original: " << original_path << "\n";
+        std::cout << "Processing Delta ID: " << delta_id
+                  << " Base: " << base_path << " Original: " << original_path
+                  << "\n";
         if (!encoder->loadBase(base_path)) {
             std::cerr << "Failed to load base chunk: " << base_path << "\n";
             continue;
         }
         if (!encoder->loadInput(original_path)) {
-            std::cerr << "Failed to load input chunk: " << original_path << "\n";
+            std::cerr << "Failed to load input chunk: " << original_path
+                      << "\n";
             continue;
         }
 
-        auto start = std::chrono::steady_clock::now();
-        uint64_t encoded_size = encoder->encode();
-        auto end = std::chrono::steady_clock::now();
-        std::chrono::duration<double> elapsed = end - start;
+        fs::path delta_path = delta_dir / (original_hash + ".delta");
+        if (!options.verify_decode) {
+            auto start = std::chrono::steady_clock::now();
+            uint64_t encoded_size = encoder->encode();
+            auto end = std::chrono::steady_clock::now();
+            std::chrono::duration<double> elapsed = end - start;
 
-        total_encoding_time += elapsed.count();
-        total_original_size += encoder->inputSize;
-        total_encoded_size += encoded_size;
-        std::cout << "Delta ID: " << delta_id << ", Encoded Size: " << encoded_size << "\n";
+            total_encoding_time += elapsed.count();
+            total_original_size += encoder->inputSize;
+            total_encoded_size += encoded_size;
+            std::cout << "Delta ID: " << delta_id
+                      << ", Encoded Size: " << encoded_size << "\n";
+
+            if (options.write_delta) {
+                std::ofstream delta_out(delta_path, std::ios::binary);
+                if (!delta_out) {
+                    std::cerr << "Failed to write delta chunk: " << delta_path
+                              << "\n";
+                    return 1;
+                }
+                delta_out.write(
+                    reinterpret_cast<const char*>(encoder->outputBuf),
+                    static_cast<std::streamsize>(encoded_size));
+            }
+        } else {
+            if (!fs::exists(delta_path)) {
+                std::cerr << "Delta chunk not found: " << delta_path << "\n";
+                return 1;
+            }
+            std::ifstream delta_in(delta_path,
+                                   std::ios::binary | std::ios::ate);
+            if (!delta_in) {
+                std::cerr << "Failed to open delta chunk: " << delta_path
+                          << "\n";
+                return 1;
+            }
+            size_t deltaSize = static_cast<size_t>(delta_in.tellg());
+
+            unsigned char* delta_buf =
+                new unsigned char[deltaSize];
+            delta_in.seekg(0);
+            delta_in.read(reinterpret_cast<char*>(delta_buf),
+                            static_cast<std::streamsize>(deltaSize));
+
+            auto decode_start = std::chrono::steady_clock::now();
+            bool ok = false;
+            try {
+                size_t decoded_size =
+                    encoder->decode(delta_buf, deltaSize);
+                if (decoded_size != encoder->inputSize) {
+                    std::cerr << "Decoded size mismatch: expected "
+                              << encoder->inputSize << ", got " << decoded_size
+                              << "\n";
+                    ok = false;
+                } else {
+                    ok = encoder->verifyDecode(delta_buf, static_cast<uint64_t>(delta_in.tellg()));
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Decode error: " << e.what() << "\n";
+                return 1;
+            }
+            auto decode_end = std::chrono::steady_clock::now();
+            std::chrono::duration<double> decode_elapsed =
+                decode_end - decode_start;
+
+            if (!ok) {
+                std::cerr << "Decode verification failed for delta: "
+                          << delta_id << "\n";
+                return 1;
+            }
+
+            total_decoding_time += decode_elapsed.count();
+            total_decoded_size += encoder->inputSize;
+        }
     }
 
-    if (total_original_size > 0 && total_encoded_size > 0) {
+    if (!options.verify_decode && total_original_size > 0 &&
+        total_encoded_size > 0) {
         double compression_ratio = static_cast<double>(total_original_size) /
-            static_cast<double>(total_encoded_size);
+                                   static_cast<double>(total_encoded_size);
         double efficiency = (1.0 - (static_cast<double>(total_encoded_size) /
-            static_cast<double>(total_original_size))) * 100.0;
+                                    static_cast<double>(total_original_size))) *
+                            100.0;
         double throughput = 0.0;
         if (total_encoding_time > 0.0) {
-            throughput = (static_cast<double>(total_original_size) / (1024.0 * 1024.0)) /
+            throughput =
+                (static_cast<double>(total_original_size) / (1024.0 * 1024.0)) /
                 total_encoding_time;
         }
         std::cout << std::fixed << std::setprecision(3);
         std::cout << "\nStats\n";
-        std::cout << "Total original size: " << total_original_size << " bytes (" << total_original_size/1024.0/1024.0 << " MB)\n";
-        std::cout << "Total encoded size: " << total_encoded_size << " bytes (" << total_encoded_size/1024.0/1024.0 << " MB)\n";
+        std::cout << "Total original size: " << total_original_size
+                  << " bytes (" << total_original_size / 1024.0 / 1024.0
+                  << " MB)\n";
+        std::cout << "Total encoded size: " << total_encoded_size << " bytes ("
+                  << total_encoded_size / 1024.0 / 1024.0 << " MB)\n";
         std::cout << "Total encode time: " << total_encoding_time << " s\n";
         std::cout << "Throughput: " << throughput << " MB/s\n";
-        std::cout << "Delta compression ratio (input/output): " << compression_ratio << "\n";
+        std::cout << "Delta compression ratio (input/output): "
+                  << compression_ratio << "\n";
         std::cout << "Delta compression efficiency: " << efficiency << "%\n";
-    } else {
-        std::cout << "No data processed; skipping stats.\n";
+    } 
+
+    if (options.verify_decode) {
+        double decode_throughput = 0.0;
+        if (total_decoding_time > 0.0) {
+            decode_throughput =
+                (static_cast<double>(total_decoded_size) / (1024.0 * 1024.0)) /
+                total_decoding_time;
+        }
+        std::cout << "Total decode size: " << total_decoded_size << " bytes\n";
+        std::cout << "Total decode time: " << total_decoding_time << " s\n";
+        std::cout << "Decode throughput: " << decode_throughput << " MB/s\n";
     }
-                               
 }
