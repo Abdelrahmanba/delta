@@ -43,7 +43,7 @@ inline uint32_t readVarint(const char*& p, const char* end)
 } // anonymous namespace
 
 /**
- * Decode a delta window produced by `deltaCompress()` and store the
+ * Decode a delta window produced by `fdelta()` and store the
  * reconstructed chunk beside the delta file.
  *
  * @param deltaPath   path to the *delta* file (“delta”)

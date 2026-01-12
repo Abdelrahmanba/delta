@@ -24,15 +24,19 @@ FetchContent_MakeAvailable(xxhash)
 add_subdirectory(Gdelta)
 include_directories(Gdelta)
 
-add_subdirectory(edelta)
-include_directories(edelta/src)
-include_directories(edelta/util)
+add_subdirectory(fdelta)
+include_directories(fdelta)
 
-add_executable(delta_compress src/main.cpp 
-                    src/lz4.c)
+include_directories(src)
+
+add_executable(delta_compress
+                    src/main.cpp
+                    src/encoders/fdelta_encoder.cc
+                    src/encoders/gdelta_encoder.cc
+                    src/lz4/lz4.c)
 
 
 
 add_executable(delta_decode src/main_decode.cpp)
 target_link_libraries(delta_decode PRIVATE xxHash::xxhash)
-target_link_libraries(delta_compress PRIVATE xxHash::xxhash Gdelta edelta)
+target_link_libraries(delta_compress PRIVATE xxHash::xxhash Gdelta fdelta)

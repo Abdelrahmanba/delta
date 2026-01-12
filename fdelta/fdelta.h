@@ -1,3 +1,4 @@
+#pragma once
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -15,10 +16,11 @@
 
 #include "decode.hpp"
 #include "gdelta.h"
+#include "edelta.h"
 
 #include <immintrin.h>
 
-#include "lz4/lz4.h"
+#include "lz4.h"
 
 
 #include "xxhash.h"
@@ -26,35 +28,19 @@
 #define hash_length 32
 
 #define COMPRESSION_LEVEL 1
-// #define DEBUG
-// #define VORBSE
 
-namespace fs = std::filesystem;
-
-extern double durationGdelta;  // global duration for performance measurement
-extern double durationDelta;  // global duration for performance measurement
-
-extern size_t totalSize;
-
-extern size_t totalGDeltaSize;  // total size of all input chunks
-extern size_t totalDeltaSize;  // total size of all deltas
 
 #define NUMBER_OF_CHUNKS 4
 #define CHUNKS_MULTIPLIER 5
 constexpr size_t MaxChunks = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER;
 
-
-extern alignas(64) char bufBaseChunk[1024 * 65];
-extern alignas(64) char bufInputChunk[1024 * 65];
-extern alignas(64) char bufDeltaChunk[1024 * 65];
-extern alignas(64) char lz4Buff[65536];  // 64K buffer for LZ4 compression
-extern char* lz4ptr; // pointer to the current position in the LZ4 buffer
-extern char* deltaPtr;  // pointer to the current position in the delta buffer
-
-extern size_t sizeBaseChunk;
-extern size_t sizeInputChunk;
+size_t sizeBaseChunk = 0;
+size_t sizeInputChunk = 0;
 using Hash64 = std::uint64_t;
 
+fencode(inputBuf, static_cast<uint64_t>(inputSize), baseBuf,
+        static_cast<uint64_t>(baseSize), &outputBuf,
+        reinterpret_cast<uint64_t*>(&outputSize));
 
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -70,21 +56,10 @@ struct chunk {
     size_t size;      // length of the chunk
 };
 
-struct DeltaOpStats {
-    size_t add_ops = 0;
-    size_t copy_ops = 0;
-    size_t add_bytes = 0;
-    size_t copy_bytes = 0;
-};
-
-extern DeltaOpStats deltaOpStats;
-void resetDeltaOpStats();
-
-extern std::unordered_map<uint64_t, uint64_t> deltaChunks;  // map of delta chunks
+std::unordered_map<uint64_t, uint64_t> deltaChunks;  // map of delta chunks
 
 
 
-// ---------- minimal vcdiff helpers -------------------------------
 // ---------- minimal vcdiff helpers -------------------------------
 enum : uint8_t {
     T_ADD = 0u << 6,  // 00
@@ -117,8 +92,6 @@ void emitADD(const char* data, size_t len) {
     writeLenHeader(T_ADD, n);
     std::memcpy(deltaPtr, data, len);
     deltaPtr += len;
-    deltaOpStats.add_ops += 1;
-    deltaOpStats.add_bytes += len;
 #ifdef DEBUG
     std::cout << "ADD len=" << len << '\n';
 #endif
@@ -147,26 +120,11 @@ void emitCOPY(size_t addr, size_t len) {
         writeVarint(naddr);
     }
 
-    deltaOpStats.copy_ops += 1;
-    deltaOpStats.copy_bytes += len;
-
 #ifdef DEBUG
     std::cout << "COPY len=" << len << " addr=" << addr << " mode="
         << ((type == T_COPY_A8) ? "A8" : (type == T_COPY_A16) ? "A16" : "V") << '\n';
 #endif
 }
-
-
-// Split a CSV line on commas, preserving empty fields
-std::vector<std::string> splitCSV(const std::string& line) {
-    std::vector<std::string> out;
-    std::stringstream ss(line);
-    std::string cell;
-    while (std::getline(ss, cell, ',')) out.push_back(std::move(cell));
-    return out;
-}
-
-
 
 void writeDeltaChunk() {
     size_t sizeDelta = static_cast<size_t>(deltaPtr - bufDeltaChunk);
@@ -177,52 +135,10 @@ void writeDeltaChunk() {
                            std::ios::binary);
     if (deltaOut) {
         deltaOut.write(bufDeltaChunk, sizeDelta);
-// #ifdef VORBSE
-        std::cout << "Delta file written: "
-            << "./deltas/" + std::to_string(hash)
-            << " with size: " << sizeDelta << '\n';
-// #endif
     }
     else
         std::cerr << "Cannot write delta file\n";
 }
-
-
-// -------------------- read base and input chunks -------------------
-void inline readBaseChunk(const fs::path& p) {
-    std::ifstream in(p, std::ios::binary | std::ios::ate);
-    if (!in) throw std::runtime_error("Cannot open " + p.string());
-    char* data = nullptr;
-    std::streamsize size = in.tellg();
-    if (size < 0) throw std::runtime_error("Cannot read " + p.string());
-    if (size > sizeof(bufBaseChunk)) {
-        throw std::runtime_error("File too large: " + p.string());
-    }
-    in.seekg(0);
-    in.read(bufBaseChunk, size);
-    sizeBaseChunk = static_cast<size_t>(size);
-#ifdef DEBUG
-    std::cout << "Base chunk read: " << p.string() << " with size: " << sizeBaseChunk << '\n';
-#endif
-}
-
-void inline readInputChunk(const fs::path& p) {
-    std::ifstream in(p, std::ios::binary | std::ios::ate);
-    if (!in) throw std::runtime_error("Cannot open " + p.string());
-    char* data = nullptr;
-    std::streamsize size = in.tellg();
-    if (size < 0) throw std::runtime_error("Cannot read " + p.string());
-    if (size > sizeof(bufInputChunk)) {
-        throw std::runtime_error("File too large: " + p.string());
-    }
-    in.seekg(0);
-    in.read(bufInputChunk, size);
-    sizeInputChunk = static_cast<size_t>(size);
-#ifdef DEBUG
-    std::cout << "Input chunk read: " << p.string() << " with size: " << sizeInputChunk << '\n';
-#endif
-}
-
 
 
 inline bool memeq_8(const void* a, const void* b) {
@@ -294,7 +210,6 @@ inline bool memeq_128(const void* a, const void* b) {
 #endif
 }
 
-// hash map
 
 struct alignas(64) TinyMapSIMD {
     static constexpr uint32_t kCap = 32;
@@ -377,14 +292,12 @@ struct alignas(64) TinyMapSIMD {
     }
 };
 
-extern alignas(64) TinyMapSIMD baseChunks;
-
+alignas(64) TinyMapSIMD baseChunks;
 
 // -------------------- Chunker --------------------
-
-extern size_t minChunkSize;
-extern size_t maxChunkSize;
-extern size_t window_size;  // Default window size
+size_t minChunkSize = 1;
+size_t maxChunkSize = 512;
+size_t window_size = 128;  // Default window size
 
 
 #define SSE_REGISTER_SIZE_BITS 128
@@ -392,9 +305,10 @@ extern size_t window_size;  // Default window size
 
 
 #ifdef __SSE3__
-extern uint64_t num_vectors;
-extern __m128i* sse_array;
+uint64_t num_vectors = window_size / SSE_REGISTER_SIZE_BYTES;
+__m128i* sse_array = new __m128i[num_vectors]();
 // sse_array2 = new __m128i[num_vectors2]();
+
 #endif
 
 
@@ -403,7 +317,7 @@ extern __m128i* sse_array;
 
 
 #ifdef __SSE3__
-extern const __m128i K_INV_ZERO;
+const __m128i K_INV_ZERO = _mm_set1_epi8(0xFF);
 #endif
 
 #ifdef __SSE3__
