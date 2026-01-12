@@ -18,7 +18,7 @@ double total_encoding_time = 0.0;
 
 struct Options {
     std::string dataset = "linux";
-    std::string encoder_type = "gdelta";
+    std::string encoder_type = "fdelta";
     uint64_t total_chunks = 1000;
     fs::path path_prefix = "/data/";
 };

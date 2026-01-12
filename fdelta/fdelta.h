@@ -14,13 +14,10 @@
 #include <unordered_map>
 #include <x86intrin.h>
 
-#include "decode.hpp"
-#include "gdelta.h"
-#include "edelta.h"
 
 #include <immintrin.h>
 
-#include "lz4.h"
+#include "../src/lz4/lz4.h"
 
 
 #include "xxhash.h"
@@ -32,15 +29,15 @@
 
 #define NUMBER_OF_CHUNKS 4
 #define CHUNKS_MULTIPLIER 5
+
+unsigned char* deltaPtr = nullptr;
 constexpr size_t MaxChunks = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER;
 
 size_t sizeBaseChunk = 0;
 size_t sizeInputChunk = 0;
 using Hash64 = std::uint64_t;
 
-fencode(inputBuf, static_cast<uint64_t>(inputSize), baseBuf,
-        static_cast<uint64_t>(baseSize), &outputBuf,
-        reinterpret_cast<uint64_t*>(&outputSize));
+
 
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -87,7 +84,7 @@ void writeLenHeader(uint8_t type, uint32_t len) {
 }
 
 inline __attribute__((always_inline, hot))
-void emitADD(const char* data, size_t len) {
+void emitADD(const unsigned char* data, size_t len) {
     const uint32_t n = static_cast<uint32_t>(len);
     writeLenHeader(T_ADD, n);
     std::memcpy(deltaPtr, data, len);
@@ -126,19 +123,6 @@ void emitCOPY(size_t addr, size_t len) {
 #endif
 }
 
-void writeDeltaChunk() {
-    size_t sizeDelta = static_cast<size_t>(deltaPtr - bufDeltaChunk);
-
-    auto hash = XXH3_64bits(bufDeltaChunk, sizeDelta);
-
-    std::ofstream deltaOut("./deltas/" + std::to_string(hash),
-                           std::ios::binary);
-    if (deltaOut) {
-        deltaOut.write(bufDeltaChunk, sizeDelta);
-    }
-    else
-        std::cerr << "Cannot write delta file\n";
-}
 
 
 inline bool memeq_8(const void* a, const void* b) {
@@ -342,7 +326,7 @@ inline __m128i NotEqual8uSSE(__m128i a, __m128i b) {
 #endif
 
 #if defined(__SSE3__)
-uint8_t find_maximum_sse128(char* buff, uint64_t start_pos,
+uint8_t find_maximum_sse128(unsigned char* buff, uint64_t start_pos,
                                      uint64_t end_pos, __m128i* xmm_array) {
     // Assume window_size is a multiple of SSE_REGISTER_SIZE_BYTES for now
     // Assume num_vectors is even for now - True for most common window sizes.
@@ -389,7 +373,7 @@ uint8_t find_maximum_sse128(char* buff, uint64_t start_pos,
     return max_val;
 }
 
-uint64_t range_scan_geq_sse128(char* buff, uint64_t start_position,
+uint64_t range_scan_geq_sse128(unsigned char* buff, uint64_t start_position,
                                         uint64_t end_position,
                                         uint8_t target_value) {
     uint64_t num_vectors =
@@ -434,11 +418,11 @@ uint64_t range_scan_geq_sse128(char* buff, uint64_t start_position,
 }
 #endif
 
-size_t nextChunk(char* readBuffer, size_t buffBegin, size_t buffEnd)
+size_t nextChunk(unsigned char* readBuffer, size_t buffBegin, size_t buffEnd)
 {
     uint32_t i = 0;
     size_t size = buffEnd - buffBegin;
-    char max_value = readBuffer[i + buffBegin];
+    unsigned char max_value = readBuffer[i + buffBegin];
     i++;
     if (size > maxChunkSize)
         size = maxChunkSize;
