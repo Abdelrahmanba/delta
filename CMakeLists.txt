@@ -27,16 +27,32 @@ include_directories(Gdelta)
 add_subdirectory(fdelta)
 include_directories(fdelta)
 
+add_subdirectory(xdelta3)
+include_directories(xdelta3)
+
+add_subdirectory(EDelta)
+include_directories(EDelta)
+
+add_subdirectory(Ddelta)
+include_directories(Ddelta)
+
+add_subdirectory(zdelta)
+include_directories(zdelta)
+
 include_directories(src)
 
 add_executable(delta_compress
                     src/main.cpp
+                    src/encoders/xdelta_encoder.cc
                     src/encoders/fdelta_encoder.cc
                     src/encoders/gdelta_encoder.cc
+                    src/encoders/edelta_encoder.cc
+                    src/encoders/zdelta_encoder.cc
+                    src/encoders/ddelta_encoder.cc
                     src/lz4/lz4.c)
 
 
 
 add_executable(delta_decode src/main_decode.cpp)
-target_link_libraries(delta_decode PRIVATE xxHash::xxhash)
-target_link_libraries(delta_compress PRIVATE xxHash::xxhash Gdelta fdelta)
+target_link_libraries(delta_decode PRIVATE xxHash::xxhash )
+target_link_libraries(delta_compress PRIVATE xxHash::xxhash Gdelta fdelta xdelta3 edelta ddelta zdelta)

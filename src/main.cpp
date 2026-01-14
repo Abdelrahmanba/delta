@@ -10,6 +10,11 @@
 #include "decode.hpp"
 #include "encoders/fdelta_encoder.h"
 #include "encoders/gdelta_encoder.h"
+#include "encoders/xdelta_encoder.h"
+#include "encoders/edelta_encoder.h"
+#include "encoders/zdelta_encoder.h"
+#include "encoders/ddelta_encoder.h"
+
 
 namespace fs = std::filesystem;
 
@@ -34,7 +39,7 @@ static void printUsage(const char* program) {
         << "Usage: " << program << " [options]\n\n"
         << "Options:\n"
         << "  -d, --dataset <name>        Dataset name (default: linux)\n"
-        << "  -e, --encoder <type>        Encoder type: gdelta|fdelta "
+        << "  -e, --encoder <type>        Encoder type: gdelta|fdelta|xdelta|edelta|zdelta "
            "(default: fdelta)\n"
         << "  -c, --chunks <count>        Max chunks to process (default: "
            "1000)\n"
@@ -122,7 +127,17 @@ int main(int argc, char* argv[]) {
         encoder = new FDeltaEncoder();
     } else if (options.encoder_type == "gdelta") {
         encoder = new GDeltaEncoder();
-    } else {
+    } else if (options.encoder_type == "xdelta") {
+        encoder = new XDeltaEncoder();
+    } else if (options.encoder_type == "edelta") {
+        encoder = new EDeltaEncoder();
+    } else if (options.encoder_type == "zdelta") {
+        encoder = new ZDeltaEncoder();
+    } else if (options.encoder_type == "ddelta") {
+        encoder = new DDeltaEncoder();
+    } 
+    
+    else {
         std::cerr << "Unknown encoder type: " << options.encoder_type << "\n";
         return 1;
     }
