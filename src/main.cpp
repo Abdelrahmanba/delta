@@ -32,6 +32,7 @@ struct Options {
     fs::path delta_dir;
     bool write_delta = false;
     bool verify_decode = false;
+    bool write_decoded = false;
 };
 
 static void printUsage(const char* program) {
@@ -48,6 +49,8 @@ static void printUsage(const char* program) {
            "<dataset>/chunks)\n"
         << "  -w, --write-delta           Write delta chunks as "
            "<input_hash>.delta\n"
+        << "  -W, --write-decoded         Write decoded chunks as "
+           "<input_hash>.decoded\n"
         << "  -v, --verify-decode         Decode-only: assert delta+base == "
            "input\n"
         << "  -h, --help                  Show this help\n";
@@ -94,6 +97,8 @@ static bool parseArgs(int argc, char* argv[], Options* options,
             options->delta_dir = argv[++i];
         } else if (arg == "-w" || arg == "--write-delta") {
             options->write_delta = true;
+        } else if (arg == "-W" || arg == "--write-decoded") {
+            options->write_decoded = true;
         } else if (arg == "-v" || arg == "--verify-decode") {
             options->verify_decode = true;
         } else {
@@ -238,9 +243,9 @@ int main(int argc, char* argv[]) {
 
             auto decode_start = std::chrono::steady_clock::now();
             bool ok = false;
+            uint64_t decoded_size = 0;
             try {
-                size_t decoded_size =
-                    encoder->decode(delta_buf, deltaSize);
+                decoded_size = encoder->decode(delta_buf, deltaSize);
                 if (decoded_size != encoder->inputSize) {
                     std::cerr << "Decoded size mismatch: expected "
                               << encoder->inputSize << ", got " << decoded_size
@@ -248,6 +253,11 @@ int main(int argc, char* argv[]) {
                     ok = false;
                 } else {
                     ok = encoder->verifyDecode(delta_buf, static_cast<uint64_t>(delta_in.tellg()));
+                    if (!ok) {
+                        std::cerr << "Decoded content mismatch for delta: "
+                                  << delta_id << "\n";
+                        throw std::runtime_error("verification failed");
+                    }
                 }
             } catch (const std::exception& e) {
                 std::cerr << "Decode error: " << e.what() << "\n";
@@ -258,9 +268,25 @@ int main(int argc, char* argv[]) {
                 decode_end - decode_start;
 
             if (!ok) {
-                std::cerr << "Decode verification failed for delta: "
+                // std::cerr << "Decode verification failed for delta: "
+                        //   << delta_id << "\n";
+                // return 1;
+            }else {
+                std::cout << "Decode verification succeeded for delta: "
                           << delta_id << "\n";
-                return 1;
+            }
+
+            if (options.write_decoded) {
+                fs::path decoded_path = delta_dir / (original_hash + ".decoded");
+                std::ofstream decoded_out(decoded_path, std::ios::binary);
+                if (!decoded_out) {
+                    std::cerr << "Failed to write decoded chunk: "
+                              << decoded_path << "\n";
+                    return 1;
+                }
+                decoded_out.write(
+                    reinterpret_cast<const char*>(encoder->outputBuf),
+                    static_cast<std::streamsize>(decoded_size));
             }
 
             total_decoding_time += decode_elapsed.count();

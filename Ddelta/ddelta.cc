@@ -142,23 +142,9 @@ static size_t common_suffix(const std::vector<uint8_t>& a,
 
 std::vector<uint8_t> DDeltaEncode(const std::vector<uint8_t>& src,
                              const std::vector<uint8_t>& tgt) {
-  // 1) Build base index: fingerprint -> list of offsets in src
-  //    Strings are defined by GearChunking with MSB5 rule.
-  std::unordered_map<uint64_t, std::vector<uint32_t>> index;
-  index.reserve(src.size() / 16 + 1);
-
-  size_t s_last = 0;
-  while (s_last < src.size()) {
-    size_t s_cut = next_cut_gear_msb5(src, s_last, src.size());
-    size_t len = s_cut - s_last;
-    uint64_t fp = SpookyHash::Hash64(src.data() + s_last, len, 0);
-    index[fp].push_back(static_cast<uint32_t>(s_last));
-    s_last = s_cut;
-  }
-
   std::vector<Op> ops;
 
-  // 2) Chunk-level prefix/suffix matches (fast capture of big equal ends)
+  // 1) Chunk-level prefix/suffix matches (fast capture of big equal ends)
   size_t pre = common_prefix(src, tgt);
   size_t suf = common_suffix(src, tgt, pre);
 
@@ -174,6 +160,20 @@ std::vector<uint8_t> DDeltaEncode(const std::vector<uint8_t>& src,
   // Define middle region to process with Ddelta string matching
   size_t t_mid_start = pre;
   size_t t_mid_end = tgt.size() - suf;
+
+  // 2) Build base index: fingerprint -> list of offsets in src
+  //    Strings are defined by GearChunking with MSB5 rule.
+  std::unordered_map<uint64_t, std::vector<uint32_t>> index;
+  index.reserve(src.size() / 16 + 1);
+
+  size_t s_last = 0;
+  while (s_last < src.size()) {
+    size_t s_cut = next_cut_gear_msb5(src, s_last, src.size());
+    size_t len = s_cut - s_last;
+    uint64_t fp = SpookyHash::Hash64(src.data() + s_last, len, 0);
+    index[fp].push_back(static_cast<uint32_t>(s_last));
+    s_last = s_cut;
+  }
 
   // 3) Process target middle by GearChunking + Spooky lookup + memcmp verify
   size_t i = t_mid_start;

@@ -7,7 +7,6 @@ uint64_t FDeltaEncoder::encode() {
 
 }
 uint64_t FDeltaEncoder::decode(uint8_t* delta_buf, uint64_t delta_size) {
-    // FDelta decoding not implemented yet
-    std::cerr << "FDeltaDecoder::decode() not implemented.\n";
-    return 0;
+ return fdecode(delta_buf, static_cast<uint64_t>(delta_size), baseBuf,
+                   static_cast<uint64_t>(baseSize), outputBuf);
 }

@@ -1,29 +1,29 @@
 
 #include "fdelta.h"
-#include "fdelta_interface.h"
-uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize, unsigned char* baseBuf,
-                 uint64_t baseSize, unsigned char* outputBuf) {
-    constexpr uint64_t CMP_LENGTH = 128;
-    constexpr uint64_t CMP_LENGTH_SHORT = 8;
 
+#include "fdelta_interface.h"
+constexpr uint64_t CMP_LENGTH = 128;
+constexpr uint64_t CMP_LENGTH_SHORT = 8;
+
+uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize,
+                 unsigned char* baseBuf, uint64_t baseSize,
+                 unsigned char* outputBuf) {
     const unsigned char* const in = (const unsigned char*)inputBuf;
     const unsigned char* const base = (const unsigned char*)baseBuf;
     deltaPtr = outputBuf;
 
-    const uint64_t inSize = inputSize;
-
     const unsigned char* const inBeg = in;
     const unsigned char* const baseBeg = base;
-    const unsigned char* const inEnd = in + inSize;
+    const unsigned char* const inEnd = in + inputSize;
     const unsigned char* const baseEnd = base + baseSize;
 
     // absolute last positions where an N‑byte compare is still valid
     const unsigned char* const inEnd128Abs =
-        (inSize >= CMP_LENGTH) ? inEnd - CMP_LENGTH : inBeg;
+        (inputSize >= CMP_LENGTH) ? inEnd - CMP_LENGTH : inBeg;
     const unsigned char* const baseEnd128Abs =
         (baseSize >= CMP_LENGTH) ? baseEnd - CMP_LENGTH : baseBeg;
     const unsigned char* const inEnd8Abs =
-        (inSize >= CMP_LENGTH_SHORT) ? inEnd - CMP_LENGTH_SHORT : inBeg;
+        (inputSize >= CMP_LENGTH_SHORT) ? inEnd - CMP_LENGTH_SHORT : inBeg;
     const unsigned char* const baseEnd8Abs =
         (baseSize >= CMP_LENGTH_SHORT) ? baseEnd - CMP_LENGTH_SHORT : baseBeg;
 
@@ -86,12 +86,13 @@ uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize, unsigned char* bas
                 uint64_t nextBaseChunkSize =
                     nextChunk(baseBuf, loopBaseOffset, baseSize);
                 loopBaseOffset += nextBaseChunkSize;
-                Hash64 fp = XXH3_64bits(
-                    baseBuf + loopBaseOffset - hash_length, hash_length);
+                Hash64 fp = XXH3_64bits(baseBuf + loopBaseOffset - hash_length,
+                                        hash_length);
                 baseChunks.upsert(fp, loopBaseOffset - 8);
                 --n;
-                _mm_prefetch((const unsigned char*)(baseBuf + loopBaseOffset + 256),
-                             _MM_HINT_T0);
+                _mm_prefetch(
+                    (const unsigned char*)(baseBuf + loopBaseOffset + 256),
+                    _MM_HINT_T0);
             }
         }
 
@@ -100,12 +101,12 @@ uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize, unsigned char* bas
         uint32_t matchedBaseOffset = baseOffset;
         {
             uint64_t n = NUMBER_OF_CHUNKS;
-            while (loopOffset < inSize && n > 0) {
+            while (loopOffset < inputSize && n > 0) {
                 uint64_t nextInputChunkSize =
-                    nextChunk(inputBuf, loopOffset, inSize);
+                    nextChunk(inputBuf, loopOffset, inputSize);
                 loopOffset += nextInputChunkSize;
-                uint64_t fp = XXH3_64bits(
-                    inputBuf + loopOffset - hash_length, hash_length);
+                uint64_t fp = XXH3_64bits(inputBuf + loopOffset - hash_length,
+                                          hash_length);
 
                 if (baseChunks.find(fp, matchedBaseOffset)) {
                     // align to start of match
@@ -124,21 +125,37 @@ uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize, unsigned char* bas
             const unsigned char* qIn = inBeg + loopOffset;
             const unsigned char* qBase = baseBeg + matchedBaseOffset;
             // step back by 8B chunks
-            while (qIn >= lowerIn + CMP_LENGTH_SHORT &&
-                   qBase >= lowerBase + CMP_LENGTH_SHORT &&
-                   (*(uint64_t*)qIn ^ *(uint64_t*)qBase) == 0) {
-                qIn -= CMP_LENGTH_SHORT;
-                qBase -= CMP_LENGTH_SHORT;
+            // while (qIn >= lowerIn + CMP_LENGTH_SHORT &&
+            //        qBase >= lowerBase + CMP_LENGTH_SHORT &&
+            //        (*(uint64_t*)qIn ^ *(uint64_t*)qBase) == 0) {
+            //     qIn -= CMP_LENGTH_SHORT;
+            //     qBase -= CMP_LENGTH_SHORT;
+            // }
+            // while (qIn >= lowerIn + CMP_LENGTH_SHORT &&
+            //        qBase >= lowerBase + CMP_LENGTH_SHORT) {
+            //     uint64_t a, b;
+            //     std::memcpy(&a, qIn - CMP_LENGTH_SHORT, CMP_LENGTH_SHORT);
+            //     std::memcpy(&b, qBase - CMP_LENGTH_SHORT, CMP_LENGTH_SHORT);
+            //     if ((a ^ b) != 0) break;
+            //     qIn -= CMP_LENGTH_SHORT;
+            //     qBase -= CMP_LENGTH_SHORT;
+            // }
+
+            while (qIn >= lowerIn + 8 && qBase >= lowerBase + 8) {
+                uint64_t a = load_u64(qIn - 8);
+                uint64_t b = load_u64(qBase - 8);
+                if (a != b) break;
+                qIn -= 8;
+                qBase -= 8;
             }
             // step back byte‑by‑byte
-            while (qIn > lowerIn && qBase > baseBeg) {
+            while (qIn > lowerIn && qBase > baseBeg && qBase > lowerBase) {
                 const unsigned char a = *(qIn - 1);
                 const unsigned char b = *(qBase - 1);
                 if (a != b) break;
                 --qIn;
                 --qBase;
             }
-
             // emit ADD for the insertion gap, if any
             if (qIn > lowerIn) {
                 emitADD(lowerIn, static_cast<size_t>(qIn - lowerIn));
@@ -169,8 +186,8 @@ uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize, unsigned char* bas
                 uint64_t nextBaseChunkSize =
                     nextChunk(baseBuf, loopBaseOffset, baseSize);
                 loopBaseOffset += nextBaseChunkSize;
-                Hash64 fp = XXH3_64bits(
-                    baseBuf + loopBaseOffset - hash_length, hash_length);
+                Hash64 fp = XXH3_64bits(baseBuf + loopBaseOffset - hash_length,
+                                        hash_length);
                 baseChunks.upsert(fp, loopBaseOffset - 8);
                 --n;
 
@@ -188,12 +205,12 @@ uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize, unsigned char* bas
             loopOffset = offset;             // reset
             matchedBaseOffset = baseOffset;  // reset
 
-            while (loopOffset < inSize && n > 0) {
+            while (loopOffset < inputSize && n > 0) {
                 uint64_t nextInputChunkSize =
-                    nextChunk(inputBuf, loopOffset, inSize);
+                    nextChunk(inputBuf, loopOffset, inputSize);
                 loopOffset += nextInputChunkSize;
-                uint64_t fp = XXH3_64bits(
-                    inputBuf + loopOffset - hash_length, hash_length);
+                uint64_t fp = XXH3_64bits(inputBuf + loopOffset - hash_length,
+                                          hash_length);
 
                 if (baseChunks.find(fp, matchedBaseOffset)) {
                     loopOffset -= 8;
@@ -202,8 +219,8 @@ uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize, unsigned char* bas
                 --n;
 
 #if defined(__x86_64__) || defined(_M_X64)
-                _mm_prefetch(reinterpret_cast<const unsigned char*>(inputBuf +
-                                                           loopOffset + 512),
+                _mm_prefetch(reinterpret_cast<const unsigned char*>(
+                                 inputBuf + loopOffset + 512),
                              _MM_HINT_T0);
 #endif
             }
@@ -223,11 +240,19 @@ uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize, unsigned char* bas
                     qIn -= CMP_LENGTH;
                     qBase -= CMP_LENGTH;
                 }
-                while (qIn >= lowerIn + CMP_LENGTH_SHORT &&
-                       qBase >= lowerBase + CMP_LENGTH_SHORT &&
-                       (*(uint64_t*)qIn ^ *(uint64_t*)qBase) == 0) {
-                    qIn -= CMP_LENGTH_SHORT;
-                    qBase -= CMP_LENGTH_SHORT;
+                // while (qIn >= lowerIn + CMP_LENGTH_SHORT &&
+                //        qBase >= lowerBase + CMP_LENGTH_SHORT &&
+                //        (*(uint64_t*)qIn ^ *(uint64_t*)qBase) == 0) {
+                //     qIn -= CMP_LENGTH_SHORT;
+                //     qBase -= CMP_LENGTH_SHORT;
+                // }
+
+                while (qIn >= lowerIn + 8 && qBase >= lowerBase + 8) {
+                    uint64_t a = load_u64(qIn - 8);
+                    uint64_t b = load_u64(qBase - 8);
+                    if (a != b) break;
+                    qIn -= 8;
+                    qBase -= 8;
                 }
 
                 if (qIn > lowerIn) {
@@ -263,10 +288,80 @@ uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize, unsigned char* bas
     }  // end for(;;)
 
     // Tail: emit remaining input
-    if (LIKELY(offset < inSize)) {
-        emitADD(inBeg + offset, static_cast<size_t>(inSize - offset));
+    if (LIKELY(offset < inputSize)) {
+        emitADD(inBeg + offset, static_cast<size_t>(inputSize - offset));
     }
     size_t deltaSize = deltaPtr - outputBuf;
-    return deltaSize;   
+    return deltaSize;
+}
 
+uint64_t fdecode(unsigned char* deltaBuf, uint64_t deltaSize,
+                 unsigned char* baseBuf, uint64_t baseSize,
+                 unsigned char* outputBuf) {
+    if (!deltaBuf || !baseBuf || !outputBuf)
+        throw std::invalid_argument("null pointer argument");
+
+    const unsigned char* p = deltaBuf;
+    const unsigned char* end = deltaBuf + deltaSize;
+    unsigned char* out = outputBuf;
+
+    int op_id = 0;
+
+    while (p < end) {
+        uint8_t header = static_cast<uint8_t>(*p++);
+        uint8_t type = header & 0xC0u;
+        uint32_t len = header & INLINE_LEN_MAX;
+
+        if (len == INLINE_LEN_MAX) {
+            len = INLINE_LEN_MAX + readVarint(p, end);
+        }
+
+        if (type == T_ADD) {
+            if (static_cast<std::size_t>(end - p) < len)
+                throw std::runtime_error("truncated ADD data");
+            std::memcpy(out, p, len);
+            out += len;
+            p += len;
+#ifdef DEBUG
+            std::cout << "#" << op_id++ << " ADD len=" << len << '\n';
+            for (uint32_t i = 0; i < len; i++) {
+                std::cout << *(out - len + i);
+            }
+            std::cout << std::dec << "\n";
+#endif
+            continue;
+        }
+
+        uint32_t addr = 0;
+        if (type == T_COPY_A8) {
+            if (p >= end) throw std::runtime_error("truncated COPY address");
+            addr = static_cast<uint32_t>(*p++);
+        } else if (type == T_COPY_A16) {
+            if (static_cast<std::size_t>(end - p) < 2)
+                throw std::runtime_error("truncated COPY address");
+            addr = static_cast<uint32_t>(p[0]) |
+                   (static_cast<uint32_t>(p[1]) << 8);
+            p += 2;
+        } else if (type == T_COPY_V) {
+            addr = readVarint(p, end);
+        } else {
+            throw std::runtime_error("invalid opcode");
+        }
+
+        if (addr + len > baseSize)
+            throw std::runtime_error("COPY out of bounds");
+
+#ifdef DEBUG
+        std::cout << "#" << op_id++ << " COPY addr=" << addr << " len=" << len
+                  << '\n';
+        for (uint32_t i = 0; i < len; i++) {
+            std::cout << *(baseBuf + addr + i);
+        }
+        std::cout << std::dec << "\n";
+#endif
+        std::memcpy(out, baseBuf + addr, len);
+        out += len;
+    }
+
+    return static_cast<uint64_t>(out - outputBuf);
 }
