@@ -19,17 +19,17 @@
 #include "../src/lz4/lz4.h"
 #include "xxhash.h"
 
-#define hash_length 32
+#define hash_length 16
 
 #define COMPRESSION_LEVEL 1
 
-#define NUMBER_OF_CHUNKS 20
-#define CHUNKS_MULTIPLIER 1
+#define NUMBER_OF_CHUNKS 4
+#define CHUNKS_MULTIPLIER 5
 size_t minChunkSize = 1;
-size_t maxChunkSize = 512;
-size_t window_size = 32;  // Default window size
+size_t maxChunkSize = 1024;
+size_t window_size = 64;  // Default window size
 
-#define DEBUG 1
+// #define DEBUG 1
 unsigned char* deltaPtr = nullptr;
 
 constexpr size_t MaxChunks = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER;
