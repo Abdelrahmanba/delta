@@ -24,6 +24,8 @@ FetchContent_MakeAvailable(xxhash)
 add_subdirectory(Gdelta)
 include_directories(Gdelta)
 
+add_subdirectory(hypersonic-rle-kit)
+
 add_subdirectory(fdelta)
 include_directories(fdelta)
 
@@ -40,6 +42,8 @@ add_subdirectory(zdelta)
 include_directories(zdelta)
 
 include_directories(src)
+
+include_directories(hypersonic-rle-kit/src)
 
 add_executable(delta_compress
                     src/main.cpp

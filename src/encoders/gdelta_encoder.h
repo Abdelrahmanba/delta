@@ -3,6 +3,7 @@
 #include "encoder.h"
 
 #include "gdelta.h"
+#include "lz4/lz4.h"
 
 
 class GDeltaEncoder final : public DeltaEncoder {

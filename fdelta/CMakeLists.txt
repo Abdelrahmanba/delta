@@ -2,10 +2,16 @@
 
 include_directories(.)
 include_directories(..)
-
-# xxHash::xxhash
+include_directories(../hypersonic-rle-kit/src)
 
 add_library(fdelta STATIC
 fdelta.cc
 )
-target_link_libraries(fdelta PRIVATE xxHash::xxhash)
+
+
+
+# print cmake dir
+target_link_libraries(fdelta
+    PRIVATE xxHash::xxhash
+    PUBLIC hsrlekit
+)

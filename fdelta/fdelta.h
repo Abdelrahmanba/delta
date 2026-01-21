@@ -18,19 +18,23 @@
 
 #include "../src/lz4/lz4.h"
 #include "xxhash.h"
+#include "fdelta_commands.hpp"
 
-#define hash_length 16
+// #define DEBUG 1
+
+#define hash_length 32
 
 #define COMPRESSION_LEVEL 1
 
-#define NUMBER_OF_CHUNKS 4
+#define NUMBER_OF_CHUNKS 5
 #define CHUNKS_MULTIPLIER 5
+
 size_t minChunkSize = 1;
 size_t maxChunkSize = 1024;
-size_t window_size = 64;  // Default window size
+size_t window_size = 256;  // Default window size
+size_t backward_window_size = 16;  // Default window size
 
-// #define DEBUG 1
-unsigned char* deltaPtr = nullptr;
+
 
 constexpr size_t MaxChunks = NUMBER_OF_CHUNKS * CHUNKS_MULTIPLIER;
 
@@ -38,112 +42,13 @@ size_t sizeBaseChunk = 0;
 size_t sizeInputChunk = 0;
 using Hash64 = std::uint64_t;
 
-#if defined(__GNUC__) || defined(__clang__)
-#define LIKELY(x) (__builtin_expect(!!(x), 1))
-#define UNLIKELY(x) (__builtin_expect(!!(x), 0))
-#else
-#define LIKELY(x) (x)
-#define UNLIKELY(x) (x)
-#endif
 
-struct chunk {
-    uint64_t offset;  // offset in the original data
-    size_t size;      // length of the chunk
-};
 
-std::unordered_map<uint64_t, uint64_t> deltaChunks;  // map of delta chunks
 
 static inline uint64_t load_u64(const unsigned char* p) {
     uint64_t v;
     std::memcpy(&v, p, sizeof(v));
     return v;
-}
-
-// ---------- minimal vcdiff helpers -------------------------------
-enum : uint8_t {
-    T_ADD = 0u << 6,       // 00
-    T_COPY_V = 1u << 6,    // 01
-    T_COPY_A8 = 2u << 6,   // 10
-    T_COPY_A16 = 3u << 6,  // 11
-    INLINE_LEN_MAX = 63
-};
-
-static inline __attribute__((always_inline, hot)) void writeVarint(uint32_t v) {
-    while (v >= 0x80) {
-        *deltaPtr++ = uint8_t((v & 0x7Fu) | 0x80u);
-        v >>= 7;
-    }
-    *deltaPtr++ = uint8_t(v);
-}
-
-static inline __attribute__((always_inline, hot)) void writeLenHeader(
-    uint8_t type, uint32_t len) {
-    if (len < INLINE_LEN_MAX) {
-        *deltaPtr++ = uint8_t(type | len);
-    } else {
-        *deltaPtr++ = uint8_t(type | INLINE_LEN_MAX);
-        writeVarint(len - INLINE_LEN_MAX);
-    }
-}
-
-inline __attribute__((always_inline, hot)) void emitADD(
-    const unsigned char* data, size_t len) {
-    const uint32_t n = static_cast<uint32_t>(len);
-    writeLenHeader(T_ADD, n);
-    std::memcpy(deltaPtr, data, len);
-    deltaPtr += len;
-#ifdef DEBUG
-    std::cout << "ADD len=" << len << '\n';
-#endif
-}
-
-inline __attribute__((always_inline, hot)) void emitCOPY(size_t addr,
-                                                         size_t len) {
-    const uint32_t nlen = static_cast<uint32_t>(len);
-    const uint32_t naddr = static_cast<uint32_t>(addr);
-
-    uint8_t type;
-    if (naddr <= 0xFFu)
-        type = T_COPY_A8;
-    else if (naddr <= 0xFFFF)
-        type = T_COPY_A16;
-    else
-        type = T_COPY_V;
-
-    writeLenHeader(type, nlen);
-
-    if (type == T_COPY_A8) {
-        *deltaPtr++ = uint8_t(naddr);
-    } else if (type == T_COPY_A16) {
-        *deltaPtr++ = uint8_t(naddr & 0xFFu);
-        *deltaPtr++ = uint8_t((naddr >> 8) & 0xFFu);
-    } else {  // T_COPY_V
-        writeVarint(naddr);
-    }
-
-#ifdef DEBUG
-    std::cout << "COPY len=" << len << " addr=" << addr << " mode="
-              << ((type == T_COPY_A8)    ? "A8"
-                  : (type == T_COPY_A16) ? "A16"
-                                         : "V")
-              << '\n';
-#endif
-}
-
-// --- read a little-endian base-128 varint ------------------------
-inline uint32_t readVarint(const unsigned char*& p, const unsigned char* end) {
-    uint32_t val = 0;
-    int shift = 0;
-
-    while (p < end) {
-        uint8_t byte = static_cast<uint8_t>(*p++);
-        val |= uint32_t(byte & 0x7F) << shift;
-        if (!(byte & 0x80)) break;  // high-bit 0 → last byte
-        shift += 7;
-        if (shift > 28) throw std::runtime_error("varint overflow");
-    }
-    if (p > end) throw std::runtime_error("truncated varint");
-    return val;
 }
 
 inline bool memeq_8(const void* a, const void* b) {
@@ -496,6 +401,39 @@ size_t nextChunk(unsigned char* readBuffer, size_t buffBegin, size_t buffEnd) {
 
     for (; i < size; i++) {
         uint8_t value = *(uint8_t*)(readBuffer + buffBegin + i);
+        if (value >= max_value) {
+            return i;
+        }
+    }
+
+    return size;
+}
+
+
+
+size_t nextChunkBackward(unsigned char* readBuffer, size_t buffBegin,
+                         size_t buffEnd) {
+    uint64_t i = 0;
+    size_t size = buffEnd - buffBegin;
+    if (size == 0) return 0;
+
+    if (size > maxChunkSize)
+        size = maxChunkSize;
+    else if (size < backward_window_size)
+        return size;
+
+    uint8_t max_value = *(uint8_t*)(readBuffer + buffEnd - 1 - i);
+    i++;
+
+    for (; i < backward_window_size; i++) {
+        uint8_t value = *(uint8_t*)(readBuffer + buffEnd - 1 - i);
+        if (value > max_value) {
+            max_value = value;
+        }
+    }
+
+    for (; i < size; i++) {
+        uint8_t value = *(uint8_t*)(readBuffer + buffEnd - 1 - i);
         if (value >= max_value) {
             return i;
         }

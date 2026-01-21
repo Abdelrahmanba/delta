@@ -3,7 +3,7 @@
 uint64_t XDeltaEncoder::encode() {
     xd3_encode_memory(inputBuf, static_cast<uint32_t>(inputSize), baseBuf,
             static_cast<uint32_t>(baseSize), outputBuf,
-            &outputSize, 64 * 1024,0);
+            &outputSize, 64 * 1024,XD3_COMPLEVEL_1);
     std::cout << "inputSize: " << inputSize << ", baseSize: " << baseSize
               << ", outputSize: " << outputSize << "\n";
     return outputSize;
