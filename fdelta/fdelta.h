@@ -148,72 +148,6 @@ struct alignas(64) TinyMapSIMD {
     }
     // Optional AVX2 finder (disabled by default). Enable if you want.
     inline bool find(uint64_t fingerprint, uint32_t& outOffset) const {
-#if defined(__AVX2__)
-
-        // Load up to 16 lanes (4 loads of 4x64). Safe because arrays are
-        // full-size.
-        __m256i key = _mm256_set1_epi64x((long long)fingerprint);
-
-        const __m256i a0 =
-            _mm256_loadu_si256((const __m256i*)&fp[0]);  // lanes 0..3
-        const __m256i a1 = _mm256_loadu_si256((const __m256i*)&fp[4]);  // 4..7
-        const __m256i a2 = _mm256_loadu_si256((const __m256i*)&fp[8]);  // 8..11
-        const __m256i a3 =
-            _mm256_loadu_si256((const __m256i*)&fp[12]);  // 12..15
-        const __m256i a4 =
-            _mm256_loadu_si256((const __m256i*)&fp[16]);  // 16..19
-
-        const __m256i m0 = _mm256_cmpeq_epi64(a0, key);
-        const __m256i m1 = _mm256_cmpeq_epi64(a1, key);
-        const __m256i m2 = _mm256_cmpeq_epi64(a2, key);
-        const __m256i m3 = _mm256_cmpeq_epi64(a3, key);
-        const __m256i m4 = _mm256_cmpeq_epi64(a4, key);
-
-        // Convert masks to per-lane hits:
-        // movemask gives 32 bits; every equal 64-bit lane sets 8 bits to 1.
-        uint32_t mm0 = (uint32_t)_mm256_movemask_epi8(m0);
-        uint32_t mm1 = (uint32_t)_mm256_movemask_epi8(m1);
-        uint32_t mm2 = (uint32_t)_mm256_movemask_epi8(m2);
-        uint32_t mm3 = (uint32_t)_mm256_movemask_epi8(m3);
-        uint32_t mm4 = (uint32_t)_mm256_movemask_epi8(m4);
-
-        // Helper to scan first hit within a 4-lane group
-        auto first_lane = [](uint32_t mm) -> int {
-            // Each 64-bit lane corresponds to 8 mask bits.
-            for (int lane = 0; lane < 4; ++lane) {
-                if (mm & (0xFFu << (lane * 8))) return lane;
-            }
-            return -1;
-        };
-
-        int grp = -1, lane = -1;
-
-        if (mm0) {
-            grp = 0;
-            lane = first_lane(mm0);
-        } else if (mm1) {
-            grp = 1;
-            lane = first_lane(mm1);
-        } else if (mm2) {
-            grp = 2;
-            lane = first_lane(mm2);
-        } else if (mm3) {
-            grp = 3;
-            lane = first_lane(mm3);
-        } else if (mm4) {
-            grp = 4;
-            lane = first_lane(mm4);
-        }
-
-        if (lane >= 0) {
-            uint32_t idx = (uint32_t)(grp * 4 + lane);
-            if (idx < count && fp[idx] == fingerprint) {
-                outOffset = off[idx];
-                return true;
-            }
-        }
-        return false;
-#else
         for (uint32_t i = 0; i < count; ++i) {
             if (fp[i] == fingerprint) {
                 outOffset = off[i];
@@ -221,7 +155,6 @@ struct alignas(64) TinyMapSIMD {
             }
         }
         return false;
-#endif
     }
 };
 
