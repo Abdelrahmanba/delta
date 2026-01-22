@@ -35,7 +35,6 @@ uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize,
                                            ? baseEnd - CMP_LENGTH_SHORT
                                            : baseBeg;
 
-    auto start = std::chrono::high_resolution_clock::now();
 
     uint64_t offset = 0;  // canonical positions
     uint64_t baseOffset = 0;
@@ -48,6 +47,17 @@ uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize,
         const unsigned char* data;
         size_t addr;
         size_t len;
+    };
+    std::vector<GapOp> opQueue;
+    opQueue.reserve(1024);
+
+    auto queueADD = [&](const unsigned char* data, size_t len) {
+        if (len == 0) return;
+        opQueue.push_back({GapOp::ADD, data, 0, len});
+    };
+    auto queueCOPY = [&](size_t addr, size_t len) {
+        if (len == 0) return;
+        opQueue.push_back({GapOp::COPY, nullptr, addr, len});
     };
 
     // main loop
@@ -78,7 +88,7 @@ uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize,
         {
             uint64_t advanced = static_cast<uint64_t>(pIn - (inBeg + offset));
             if (advanced != 0) {
-                emitCOPY(baseOffset, advanced);
+                queueCOPY(baseOffset, advanced);
                 offset += advanced;
                 baseOffset += advanced;
             }
@@ -226,11 +236,11 @@ uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize,
             // emit ops for the insertion gap, if any
             if (qIn > lowerIn) {
                 // emitBackwardGapOps(lowerIn, qIn, lowerBase, qBase);
-                emitADD(lowerIn, static_cast<size_t>(qIn - lowerIn));
+                queueADD(lowerIn, static_cast<size_t>(qIn - lowerIn));
             }
             // emit COPY for the matched backward extension
             if (qBase != (baseBeg + matchedBaseOffset)) {
-                emitCOPY(
+                queueCOPY(
                     static_cast<size_t>(qBase - baseBeg),
                     static_cast<size_t>((baseBeg + matchedBaseOffset) - qBase));
             }
@@ -325,12 +335,13 @@ uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize,
 
                 if (qIn > lowerIn) {
                     // emitBackwardGapOps(lowerIn, qIn, lowerBase, qBase);
-                    emitADD(lowerIn, static_cast<size_t>(qIn - lowerIn));
+                    queueADD(lowerIn, static_cast<size_t>(qIn - lowerIn));
                 }
                 if (qBase != (baseBeg + matchedBaseOffset)) {
-                    emitCOPY(static_cast<size_t>(qBase - baseBeg),
-                             static_cast<size_t>((baseBeg + matchedBaseOffset) -
-                                                 qBase));
+                    queueCOPY(
+                        static_cast<size_t>(qBase - baseBeg),
+                        static_cast<size_t>((baseBeg + matchedBaseOffset) -
+                                            qBase));
                 }
 
                 offset = loopOffset;
@@ -343,14 +354,14 @@ uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize,
                 uint64_t prevOffset = offset;
                 if (loopOffset > offset) {
                     addLen = loopOffset - offset;
-                    emitADD(inBeg + offset, static_cast<size_t>(addLen));
+                    queueADD(inBeg + offset, static_cast<size_t>(addLen));
                     offset = loopOffset;
                     baseOffset = loopBaseOffset;  // progress base along with
                                                   // what we indexed
                 } else {
                     // ensure forward progress to avoid infinite loop
                     addLen = 1;
-                    emitADD(inBeg + offset, addLen);
+                    queueADD(inBeg + offset, addLen);
                     ++offset;
                     ++baseOffset;
                 }
@@ -361,11 +372,20 @@ uint64_t fencode(unsigned char* inputBuf, uint64_t inputSize,
 
     // Tail: emit remaining input
     if (LIKELY(offset < curInputSize)) {
-        emitADD(inBeg + offset, static_cast<size_t>(curInputSize - offset));
+        queueADD(inBeg + offset, static_cast<size_t>(curInputSize - offset));
     }
     if (suffixLen != 0) {
-        emitCOPY(static_cast<size_t>(suffixBaseOffset),
-                 static_cast<size_t>(suffixLen));
+        queueCOPY(static_cast<size_t>(suffixBaseOffset),
+                  static_cast<size_t>(suffixLen));
+    }
+
+    deltaPtr = outputBuf;
+    for (const auto& op : opQueue) {
+        if (op.type == GapOp::ADD) {
+            emitADD(op.data, op.len);
+        } else {
+            emitCOPY(op.addr, op.len);
+        }
     }
     size_t deltaSize = deltaPtr - outputBuf;
 
