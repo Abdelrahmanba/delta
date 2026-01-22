@@ -24,7 +24,6 @@ FetchContent_MakeAvailable(xxhash)
 add_subdirectory(Gdelta)
 include_directories(Gdelta)
 
-add_subdirectory(hypersonic-rle-kit)
 
 add_subdirectory(fdelta)
 include_directories(fdelta)

@@ -3,7 +3,6 @@
 
 #include "fdelta_interface.h"
 #include <cstdlib>
-#include "rle.h"
 constexpr uint64_t CMP_LENGTH = 128;
 constexpr uint64_t CMP_LENGTH_SHORT = 8;
 
