@@ -22,7 +22,7 @@
 
 // #define DEBUG 1
 
-#define hash_length 32
+#define hash_length 128
 
 #define COMPRESSION_LEVEL 1
 
