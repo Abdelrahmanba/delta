@@ -26,7 +26,7 @@
 
 #define COMPRESSION_LEVEL 1
 
-#define NUMBER_OF_CHUNKS 8
+#define NUMBER_OF_CHUNKS 5
 #define CHUNKS_MULTIPLIER 5
 
 size_t minChunkSize = 1;
@@ -387,13 +387,13 @@ size_t nextChunk(unsigned char* readBuffer, size_t buffBegin, size_t buffEnd) {
     uint32_t hash = 0;
     size_t size = buffEnd - buffBegin;
     if (size > maxChunkSize) size = maxChunkSize;
-    for (; i + 1 < size; i += 1) {
+    for (; i + 1 < size; i += 2) {
         uint8_t byte = *(uint8_t*)(readBuffer + buffBegin + i);
-        // uint8_t byte2 = *(uint8_t*)(readBuffer + buffBegin + i + 1);
-        // hash = (hash << 2) + (g[byte]) + (g[byte2]);
-        hash = (hash << 1) + (g[byte]);
-        // if (!(hash & 0x18035100)) {
-        if (!(hash & 0x1804110)) {
+        uint8_t byte2 = *(uint8_t*)(readBuffer + buffBegin + i + 1);
+        hash = (hash << 2) + (g[byte]) + (g[byte2]);
+        // hash = (hash << 1) + (g[byte]);
+        if (!(hash & 0x18035100)) {
+        // if (!(hash & 0x1804110)) {
             return i;
         }
     }
